@@ -1,0 +1,26 @@
+-module(gleam_dap_session_ffi).
+-export([or_none/1, spawn_worker/1, detach_all/0, is_shutdown/1, is_normal/1]).
+
+%% Option(String) to a binary or the atom `none`, for the Erlang side.
+or_none({some, V}) -> V;
+or_none(none) -> none.
+
+spawn_worker(Fun) ->
+    spawn(Fun).
+
+%% Removes every breakpoint and stops interpreting, so an attached node is
+%% left as it was.
+detach_all() ->
+    catch int:auto_attach(false),
+    catch int:no_break(),
+    catch int:nn(int:interpreted()),
+    nil.
+
+is_shutdown(shutdown) -> true;
+is_shutdown({shutdown, _}) -> true;
+is_shutdown(killed) -> true;
+is_shutdown(normal) -> true;
+is_shutdown(_) -> false.
+
+is_normal(normal) -> true;
+is_normal(_) -> false.

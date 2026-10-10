@@ -1,0 +1,5 @@
+# Fixture project for gleam-dap's tests. It has no dependencies on purpose,
+# so it builds without network access.
+name = "sample"
+version = "1.0.0"
+target = "erlang"
