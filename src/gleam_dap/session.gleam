@@ -365,7 +365,7 @@ fn connect_node(node: String, cookie: String) -> Result(Nil, String)
 
 fn launch(state: State, request: Request, mode: Mode) -> State {
   case prepare(request, mode) {
-    Ok(#(config, index, interpreted)) -> {
+    Ok(#(config, index, interpreted, mode)) -> {
       respond(request, None)
       send_event(protocol.event("initialized", None))
       State(
@@ -388,8 +388,15 @@ fn launch(state: State, request: Request, mode: Mode) -> State {
 fn prepare(
   request: Request,
   mode: Mode,
-) -> Result(#(Config, Index, Set(String)), String) {
+) -> Result(#(Config, Index, Set(String), Mode), String) {
   use config <- result.try(launch.decode_config(request.arguments, get_cwd()))
+  // A `launch` that names a node attaches to it. LSP4IJ's own attach mode
+  // expects a debug adapter listening on a socket, so IntelliJ users attach
+  // through a launch configuration instead.
+  let mode = case mode, config.node {
+    Launch, "" -> Launch
+    _, _ -> Attach
+  }
   let config =
     launch.Config(..config, project_dir: project.absname(config.project_dir))
   use name <- result.try(project.read_name(config.project_dir))
@@ -416,7 +423,7 @@ fn prepare(
   let index = project.build_index(config.project_dir, name)
   set_labels(value.labels_to_list(index.labels))
   case config.no_debug {
-    True -> Ok(#(config, index, set.new()))
+    True -> Ok(#(config, index, set.new(), mode))
     False -> {
       use _ <- result.try(int_start(config.stack_trace_mode))
       let modules = launch.modules_to_interpret(index, config)
@@ -435,7 +442,7 @@ fn prepare(
         |> list.map(fn(m) { m.module })
         |> list.filter(fn(m) { !list.contains(failed, m) })
         |> set.from_list
-      Ok(#(config, index, interpreted))
+      Ok(#(config, index, interpreted, mode))
     }
   }
 }

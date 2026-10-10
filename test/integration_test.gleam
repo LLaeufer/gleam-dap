@@ -448,11 +448,20 @@ fn start_target(cookie: String) -> String
 fn stop_target(node: String, cookie: String) -> dynamic.Dynamic
 
 pub fn attach_test() {
+  attach_with("attach")
+}
+
+/// IntelliJ attaches through a `launch` that names the node.
+pub fn attach_through_launch_test() {
+  attach_with("launch")
+}
+
+fn attach_with(command: String) {
   let cookie = "gleam_dap_test"
   let node = start_target(cookie)
   let client = dap_client.start_and_initialize()
   let response =
-    request(client, "attach", [
+    request(client, command, [
       #("projectDir", JString(dap_client.fixture())),
       #("node", JString(node)),
       #("cookie", JString(cookie)),
