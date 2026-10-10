@@ -329,3 +329,72 @@ pub fn evaluate_errors_test() {
     == ["classify"]
   finish(client)
 }
+
+@external(erlang, "test_ffi", "get_env")
+fn get_env(name: String) -> Result(String, Nil)
+
+pub fn program_with_dependencies_test() {
+  let client =
+    dap_client.launch_project(
+      dap_client.project_root() <> "/fixtures/with_deps",
+      [#("interpretModules", JArray([JString("gleam/list")]))],
+    )
+  let _ =
+    request(client, "setBreakpoints", [
+      #(
+        "source",
+        JObject([
+          #(
+            "path",
+            JString(
+              dap_client.project_root() <> "/fixtures/with_deps/src/with_deps.gleam",
+            ),
+          ),
+        ]),
+      ),
+      #("breakpoints", breakpoints([12])),
+    ])
+  let response =
+    request(client, "setFunctionBreakpoints", [
+      #("breakpoints", JArray([JObject([#("name", JString("gleam/list.map"))])])),
+    ])
+  let verified =
+    get(response, ["body", "breakpoints"], decode.list(decode.at(["verified"], decode.bool)))
+  // The packaged adapter renames its own gleam_stdlib, so the program's copy
+  // can be interpreted. Run from the source tree the adapter shares it, and
+  // it must refuse rather than deadlock.
+  let packaged = get_env("GLEAM_DAP_COMMAND") |> result_is_ok
+  assert verified == [packaged]
+  let _ = request(client, "configurationDone", [])
+
+  let thread = case packaged {
+    True -> {
+      let #(thread, _, frames) = wait_stop(client)
+      assert top(frames) == #("gleam/list.map", 352)
+      let _ = request(client, "continue", thread_arg(thread))
+      thread
+    }
+    False -> 0
+  }
+  let #(stopped_thread, _, frames) = wait_stop(client)
+  let _ = thread
+  assert top(frames) == #("with_deps.main", 12)
+  let assert [frame, ..] = frames
+  assert values(scope_variables(client, frame.id, "Locals"))
+    == [
+      #("counts", "dict.from_list([#(\"a\", 1), #(\"b\", 2)])"),
+      #("doubled", "[2, 4, 6]"),
+      #("maybe", "Some(3)"),
+      #("numbers", "[1, 2, 3]"),
+    ]
+  let _ = request(client, "continue", thread_arg(stopped_thread))
+  let _ = wait_event(client, "terminated")
+  finish(client)
+}
+
+fn result_is_ok(r: Result(a, b)) -> Bool {
+  case r {
+    Ok(_) -> True
+    Error(_) -> False
+  }
+}

@@ -93,6 +93,8 @@ pub type State {
     mode: Mode,
     config: Option(Config),
     index: Option(Index),
+    /// Modules interpreted by `int`; breakpoints elsewhere never stop.
+    interpreted: Set(String),
     stdout: Option(Pid),
     line_breakpoints: Dict(String, List(LineBreakpoint)),
     function_breakpoints: List(FunctionBreakpoint),
@@ -150,6 +152,7 @@ pub fn new_state(subject: Subject(Message)) -> State {
     mode: Launch,
     config: None,
     index: None,
+    interpreted: set.new(),
     stdout: None,
     line_breakpoints: dict.new(),
     function_breakpoints: [],
@@ -352,10 +355,16 @@ fn connect_node(node: String, cookie: String) -> Result(Nil, String)
 
 fn launch(state: State, request: Request, mode: Mode) -> State {
   case prepare(request, mode) {
-    Ok(#(config, index)) -> {
+    Ok(#(config, index, interpreted)) -> {
       respond(request, None)
       send_event(protocol.event("initialized", None))
-      State(..state, mode:, config: Some(config), index: Some(index))
+      State(
+        ..state,
+        mode:,
+        config: Some(config),
+        index: Some(index),
+        interpreted:,
+      )
       |> capture_output
     }
     Error(message) -> {
@@ -365,7 +374,10 @@ fn launch(state: State, request: Request, mode: Mode) -> State {
   }
 }
 
-fn prepare(request: Request, mode: Mode) -> Result(#(Config, Index), String) {
+fn prepare(
+  request: Request,
+  mode: Mode,
+) -> Result(#(Config, Index, Set(String)), String) {
   use config <- result.try(launch.decode_config(request.arguments, get_cwd()))
   let config =
     launch.Config(..config, project_dir: project.absname(config.project_dir))
@@ -393,7 +405,7 @@ fn prepare(request: Request, mode: Mode) -> Result(#(Config, Index), String) {
   let index = project.build_index(config.project_dir, name)
   set_labels(value.labels_to_list(index.labels))
   case config.no_debug {
-    True -> Ok(#(config, index))
+    True -> Ok(#(config, index, set.new()))
     False -> {
       use _ <- result.try(int_start(config.stack_trace_mode))
       let modules = launch.modules_to_interpret(index, config)
@@ -406,7 +418,13 @@ fn prepare(request: Request, mode: Mode) -> Result(#(Config, Index), String) {
         <> int.to_string(list.length(modules) - list.length(failures))
         <> " modules",
       )
-      Ok(#(config, index))
+      let failed = list.map(failures, fn(f) { names.gleam_to_module(f.0) })
+      let interpreted =
+        modules
+        |> list.map(fn(m) { m.module })
+        |> list.filter(fn(m) { !list.contains(failed, m) })
+        |> set.from_list
+      Ok(#(config, index, interpreted))
     }
   }
 }
@@ -582,7 +600,11 @@ fn set_breakpoints(state: State, request: Request) -> State {
     list.map_fold(requested, state, fn(state, source) {
       let id = state.next_breakpoint_id
       let resolved = case module {
-        Ok(module) -> project.resolve_line(module, source.line)
+        Ok(module) ->
+          case set.contains(state.interpreted, module.module) {
+            True -> project.resolve_line(module, source.line)
+            False -> not_interpreted(module)
+          }
         Error(Nil) ->
           project.Unresolved("This file is not part of the debugged program")
       }
@@ -619,6 +641,15 @@ fn set_breakpoints(state: State, request: Request) -> State {
     ),
   )
   state
+}
+
+fn not_interpreted(module: ModuleInfo) -> project.Resolved {
+  project.Unresolved(not_interpreted_message(module))
+}
+
+fn not_interpreted_message(module: ModuleInfo) -> String {
+  names.module_to_gleam(module.module)
+  <> " is not interpreted. Add it to interpretModules in the launch configuration to debug it."
 }
 
 fn line_breakpoint_json(breakpoint: LineBreakpoint, path: String) -> Json {
@@ -668,7 +699,14 @@ fn set_function_breakpoints(state: State, request: Request) -> State {
       let #(name, condition, hit_condition) = item
       let id = state.next_breakpoint_id
       let location = case state.index {
-        Some(index) -> find_function_breakpoint(index, name)
+        Some(index) ->
+          find_function_breakpoint(index, name)
+          |> result.try(fn(found) {
+            case set.contains(state.interpreted, { found.0 }.module) {
+              True -> Ok(found)
+              False -> Error(not_interpreted_message(found.0))
+            }
+          })
         None -> Error("Launch the program first")
       }
       #(

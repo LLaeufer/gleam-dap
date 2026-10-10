@@ -17,10 +17,16 @@ start() ->
 init(Owner) ->
     {ok, Cwd} = file:get_cwd(),
     Ebins = filelib:wildcard(filename:join(Cwd, "build/dev/erlang/*/ebin")),
-    Erl = os:find_executable("erl"),
     Log = filename:join(Cwd, "build/gleam-dap-test.log"),
-    Port = open_port({spawn_executable, Erl},
-                     [{args, ["-noinput", "-pa" | Ebins] ++ ["-eval", "gleam_dap:main()"]},
+    %% GLEAM_DAP_COMMAND runs the tests against a packaged adapter instead.
+    {Exe, Args} = case os:getenv("GLEAM_DAP_COMMAND") of
+        false ->
+            {os:find_executable("erl"),
+             ["-noinput", "-pa" | Ebins] ++ ["-eval", "gleam_dap:main()"]};
+        Command -> {Command, []}
+    end,
+    Port = open_port({spawn_executable, Exe},
+                     [{args, Args},
                       {env, [{"GLEAM_DAP_LOG", Log}]},
                       binary, stream, exit_status]),
     Owner ! {self(), started},

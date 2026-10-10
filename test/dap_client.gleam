@@ -43,10 +43,14 @@ pub fn source(file: String) -> Json {
 /// Starts an adapter, initializes it and launches the fixture with the
 /// given extra launch options.
 pub fn launch(options: List(#(String, Json))) -> Client {
+  launch_project(fixture(), options)
+}
+
+pub fn launch_project(dir: String, options: List(#(String, Json))) -> Client {
   let client = start_client()
   let _ = request(client, "initialize", [#("adapterID", JString("gleam"))])
   let response =
-    request(client, "launch", [#("projectDir", JString(fixture())), ..options])
+    request(client, "launch", [#("projectDir", JString(dir)), ..options])
   let assert True = success(response)
   let _ = wait_event(client, "initialized")
   client
