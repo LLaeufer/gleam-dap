@@ -8,6 +8,13 @@ A debugger for Gleam programs running on the Erlang VM, speaking the
 This is a personal tool for exploring Gleam more comfortably. It is not
 intended for upstreaming.
 
+Detailed plans:
+
+- [docs/line-mapping.md](docs/line-mapping.md): how `.gleam` lines map to
+  what the BEAM runs, every approach we considered, and the chosen one.
+- [docs/elixirls-features.md](docs/elixirls-features.md): how each feature of
+  ElixirLS's debugger works and how we port it.
+
 ## Goals for the first version
 
 - Launch a Gleam project (Erlang target) from the editor and stop on
@@ -21,28 +28,27 @@ intended for upstreaming.
 ### Not in the first version
 
 - The JavaScript target.
-- Attaching to an already running node or a remote node.
-- Evaluating Gleam expressions in the debug console. Erlang expressions may
-  come cheaply, Gleam expressions would need the compiler.
-- Conditional breakpoints, logpoints and hit counts. `int` supports
-  conditions, so these are good follow-ups.
+- Gleam versions before 1.19 (see "What we already know").
+- The advanced features in step 5: attach, evaluate, conditional
+  breakpoints, logpoints, hit counts and function breakpoints.
 
 ## What we already know
 
-These findings come from a quick experiment with Gleam 1.12.0 and OTP 25 on a
-small sample project.
+These findings come from experiments with Gleam 1.12.0, Gleam 1.19.0 and
+OTP 25 on small sample projects. Details are in
+[docs/line-mapping.md](docs/line-mapping.md).
 
 1. **Gleam's BEAM files can be interpreted by `int`.** Gleam compiles every
-   module with `debug_info`, and `int:i(Module)` loads it as long as the
-   generated `.erl` file in `build/dev/erlang/<pkg>/_gleam_artefacts/` is
-   still there. Breakpoints are hit, `int:meta(Meta, bindings, nostack)`
-   returns variables, `step` moves to the next expression and
-   `backtrace` returns the call stack.
-2. **Breakpoint lines are lines of the generated `.erl` file.** Gleam does
-   not produce a source map. The only link back to Gleam is one
-   `-file("src/foo.gleam", N).` attribute in front of each function, giving
-   the line where the Gleam function starts. Statement-level mapping is our
-   job (see step 3).
+   module with `debug_info`. Breakpoints are hit,
+   `int:meta(Meta, bindings, nostack)` returns variables, `step` moves to the
+   next expression and `backtrace` returns the call stack.
+2. **Gleam 1.19 gives us Gleam line numbers for free.** Since v1.19.0
+   (released 5 October 2026) Gleam generates Erlang abstract forms instead of
+   Erlang source, annotated with the Gleam line of every expression. `int`
+   then breaks, steps and reports in `.gleam` lines with no mapping at all.
+   Before 1.19 the only link back to Gleam was one `-file` attribute per
+   function, and `int` used lines of the generated `.erl` file. We therefore
+   **require Gleam ≥ 1.19**, which in turn needs **OTP ≥ 27**.
 3. **Variable names are mangled.** `let x = 1` followed by `let x = x + 1`
    becomes `X` and `X@1` in Erlang, and both show up in the bindings.
 4. **Values are plain Erlang terms.** A `Person("Ada", 2)` record is the
@@ -54,6 +60,9 @@ small sample project.
    to report an exception at the right `.gleam` line.
 6. **Module names:** `src/foo/bar.gleam` compiles to the Erlang module
    `foo@bar`.
+7. **Step over follows tail calls.** `int`'s "next" stops inside a function
+   called in tail position, because the call doesn't add a stack level.
+   Gleam code is full of tail calls, so the adapter has to correct this.
 
 ## Approach: our own adapter on `int` or adapting ElixirLS
 
@@ -75,14 +84,14 @@ What ElixirLS's debug adapter is, as of its `master` in August 2026:
 - Starts programs through Mix: `launch` runs Mix's `compile` and `app.start`
   and then a Mix task. Gleam projects have no Mix project.
 - Finds the module for a breakpoint through the `source` recorded in each
-  BEAM file. For Gleam that is the generated `.erl` file, not the `.gleam`
-  file. It also handles `.erl` files directly.
+  BEAM file. Gleam 1.19 BEAM files record no source at all, so this would
+  need replacing.
 - Evaluates expressions with `Code.eval_string`, so the debug console speaks
   Elixir.
 
 ### The Gleam-specific work is the same either way
 
-Line mapping between `.gleam` and generated `.erl` lines, demangling `X@1`
+Mapping `.gleam` files to modules, fixing stepping over tail calls, demangling `X@1`
 into `x`, rendering records and `Option`/`Result` the Gleam way, and reading
 Gleam error maps are all needed in both approaches. Neither `int` nor
 ElixirLS knows anything about Gleam. Step 3 of this plan is the same amount
@@ -120,9 +129,11 @@ implementation rather than as a base.
 
 **When adapting ElixirLS would win:** if you want the full feature set
 (conditions, logpoints, attach) soon, and don't mind Elixir and Mix being
-installed. A cheap way to check this path is in step 1: see whether
-ElixirLS can stop on a breakpoint set in a Gleam module's generated `.erl`
-file, since it already supports `.erl` sources. That is likely but untested.
+installed.
+
+**Decision:** our own adapter, with ElixirLS as the reference (decided
+10 October 2026). How each ElixirLS feature carries over is in
+[docs/elixirls-features.md](docs/elixirls-features.md).
 
 ## Architecture
 
@@ -134,7 +145,7 @@ file, since it already supports `.erl` sources. That is likely but untested.
  │  dap/transport   reads and writes DAP messages                            │
  │  dap/session     request handling and state (OTP actor)                   │
  │  debugger/int    thin FFI wrapper over Erlang's int and meta processes    │
- │  mapping/*       .gleam ↔ .erl line mapping, name demangling, value view  │
+ │  gleam/*         module ↔ file index, names, values, stepping fixes       │
  │                                                                           │
  │  user's program  modules interpreted by int, stdout redirected to the     │
  │                  adapter and sent to the editor as DAP "output" events    │
@@ -146,15 +157,16 @@ file, since it already supports `.erl` sources. That is likely but untested.
   the adapter's stdout, so the program runs under its own group leader that
   forwards output to the editor.
 - **Written in Gleam**, with small Erlang FFI files where we talk to `int`,
-  `epp`/`erl_parse`, and group leaders.
+  `beam_lib`, and group leaders.
 - **Shipped as an Erlang shipment** (`gleam export erlang-shipment`), started
   by a small launcher script that the editor runs. Requires Erlang/OTP with
   the `debugger` application installed (on Debian/Ubuntu that is the
   `erlang-debugger` package).
 
-Likely dependencies: `gleam_stdlib`, `gleam_erlang`, `gleam_otp`,
-`gleam_json` and `glance` (a Gleam parser written in Gleam, used for line
-mapping and for knowing record shapes).
+Likely dependencies: `gleam_stdlib`, `gleam_erlang`, `gleam_otp` and
+`gleam_json`, plus possibly `glance` (a Gleam parser written in Gleam) for
+reading custom type definitions. The adapter must never interpret the
+modules it uses itself (see the feature plan).
 
 ## Step 1: Feasibility spike
 
@@ -167,22 +179,19 @@ them.
 - An Erlang/Gleam script that builds the fixture, interprets its modules,
   sets a breakpoint, steps through a function and prints bindings and the
   backtrace at each stop.
-- A first experiment with line mapping (step 3) on the fixture, to see how
-  well Gleam statements line up with the generated Erlang.
-- Optional: check whether ElixirLS can stop on a breakpoint in a Gleam
-  module's generated `.erl` file, to confirm the alternative approach is
-  viable before ruling it out.
-- Check the oldest OTP version we want to support, and whether OTP 26 and 27
-  behave the same as OTP 25.
+- Run it with Gleam 1.19 on OTP 27 and 28. Our experiments ran Gleam 1.19's
+  abstract forms on OTP 25, because Gleam 1.19's own build needs OTP 27.
+- Golden files of each fixture module's breakable lines, so a compiler change
+  shows up as a test diff.
 
-**Done when** the script reliably stops in every interesting construct in the
-fixture and we know whether statement-level line mapping is practical or
-whether we start with function-level breakpoints.
+**Done when** the script reliably stops on the right `.gleam` line in every
+interesting construct in the fixture, on OTP 27 and 28.
 
 ## Step 2: Core adapter
 
-A working debugger, even if lines and names still
-look like Erlang.
+A working debugger, even if names and values still look like Erlang. The
+details of each request, and what we take from ElixirLS, are in
+[docs/elixirls-features.md](docs/elixirls-features.md).
 
 **Transport and session**
 - Read and write DAP messages on stdio with `Content-Length` framing and JSON
@@ -197,36 +206,29 @@ look like Erlang.
 | Request | Behaviour |
 | --- | --- |
 | `initialize` | Report capabilities (no conditional breakpoints yet). |
-| `launch` | Run `gleam build`, add `build/dev/erlang/*/ebin` to the code path, interpret the project's own modules (dependencies opt-in via a launch option), then spawn `<module>:main()`. |
-| `setBreakpoints` | Translate `.gleam` lines to `.erl` lines (identity or function start until step 3) and call `int:break/2`. Report each breakpoint as verified or not. |
-| `configurationDone` | Start the program. |
-| `threads` | One thread per interpreted process, from `int:snapshot/0`. |
-| `stackTrace` | From the meta process's backtrace. |
+| `launch` | Check Gleam and OTP versions, run `gleam build`, add `build/dev/erlang/*/ebin` to the code path, build the module ↔ file index and interpret the project's own modules (dependencies opt-in via a launch option). |
+| `setBreakpoints` / `breakpointLocations` | Map the file to its module and call `int:break/2` on the Gleam line, moving breakpoints on lines without code to the next line that has some. |
+| `configurationDone` | Start the program with `<module>:main()`. |
+| `threads` | Interpreted processes from `int:snapshot/0` plus the program's own processes, not the adapter's. |
+| `stackTrace` | From the meta process's backtrace, read outside the session actor with a timeout. |
 | `scopes` / `variables` | Locals from `int:meta(Meta, bindings, nostack)`; tuples, lists and maps expand into children. |
-| `continue`, `next`, `stepIn`, `stepOut`, `pause` | `int:meta/2` with `continue`, `next`, `step`, `finish`; pause via a temporary breakpoint or `int:attach`. |
+| `continue`, `next`, `stepIn`, `stepOut` | `int:continue/1`, `next/1`, `step/1`, `finish/1`, with step over corrected for tail calls. |
 | `disconnect` / `terminate` | Stop the program, clear breakpoints, exit cleanly. |
 
-**Events:** `initialized`, `stopped` (breakpoint, step, exception), `output`,
-`thread` (started and exited), `exited` and `terminated`. We use
-`int:auto_attach([break], ...)` so every process that hits a breakpoint gets a
-meta process that reports to the session.
+**Events:** `initialized`, `stopped` (breakpoint, step), `output`, `thread`
+(started and exited), `exited` and `terminated`. Like ElixirLS, we use
+`int:auto_attach([break], ...)` with a callback that only notifies the
+session, so every stop is reported without attaching to processes.
 
 **Done when** VS Code, configured by hand, can debug the fixture project end to
 end. This is the point where the pull request with working code opens.
 
 ## Step 3: Make it feel like Gleam
 
-**Line mapping (`.gleam` ↔ `.erl`)**
-- For each module, parse the Gleam source with `glance` and the generated
-  `.erl` with `epp`/`erl_parse` (through FFI).
-- Pair functions using the `-file` attributes and function names.
-- Walk both function bodies together to pair each Gleam statement or
-  expression with its Erlang counterpart, producing a table in both
-  directions.
-- Where the walk cannot match something, fall back to the start of the
-  enclosing function and mark the breakpoint as moved, so the editor shows
-  where it really is.
-- Cache mappings per module and rebuild them when the `.erl` file changes.
+Line numbers are already right with Gleam 1.19, so this step is about names,
+values, stack frames and errors. See
+[docs/line-mapping.md](docs/line-mapping.md) for the line-related details
+and [docs/elixirls-features.md](docs/elixirls-features.md) for the rest.
 
 **Names**
 - `X@1` → `x`, `My_var` → `my_var`.
@@ -236,23 +238,19 @@ end. This is the point where the pull request with working code opens.
 
 **Values**
 - Learn custom types (constructor names, labels, field order) from the
-  `glance` parse of each module.
+  record headers Gleam generates or from parsing each module's source.
 - Show `Person(name: "Ada", age: 2)` instead of `{person, <<"Ada">>, 2}`.
 - Built-ins: `String`, `List`, `Nil`, `Bool`, `Option`, `Result`, `Dict`,
   tuples, `BitArray`, functions shown by name and arity.
 - Fall back to Erlang notation for anything we cannot type.
 
-**Stack frames and exceptions**
-- Stack frames show the Gleam module (`foo/bar`) and function name and the
-  mapped `.gleam` line.
-- Stop on uncaught Gleam errors (`panic`, `todo`, `let assert`) using the
-  error map's `file` and `line`, and show the message.
-
-**Stepping**
-- Skip over code that has no Gleam counterpart, so one "step over" moves one
-  Gleam line.
-- Step out of non-interpreted modules (dependencies, OTP) instead of getting
-  stuck.
+**Stack frames, errors and pause**
+- Stack frames show the Gleam module (`foo/bar`) and function name, and
+  anonymous functions as "anonymous function in `name`".
+- Stop on uncaught Gleam errors (`panic`, `todo`, `let assert`) using
+  `int:auto_attach([exit], ...)` and the error map's `file`, `line` and
+  message.
+- `pause` that really suspends the process, through `int:meta(Meta, stop)`.
 
 **Done when** debugging the fixture feels like debugging Gleam: breakpoints
 land where they were set, steps move line by line in the `.gleam` file, and
@@ -280,6 +278,23 @@ variables look like Gleam values.
 **Done when** a fresh checkout can be built and used in both editors by
 following the README.
 
+## Step 5: Advanced features
+
+The rest of ElixirLS's feature set, in roughly this order. Each is described
+in [docs/elixirls-features.md](docs/elixirls-features.md).
+
+- Function breakpoints (`app/user.greet/1`) through `int:break_in/3`.
+- Conditional breakpoints, hit counts and logpoints through
+  `int:test_at_break/3`, with Erlang expressions at first.
+- Evaluate in the debug console, watch and hover: variable and field lookups
+  first, then Erlang expressions.
+- Completions for variable, module and function names.
+- Attach to a running node.
+- Terminate single threads and cancel slow requests.
+- A `debug.break()` function to stop from code.
+
+**Done when** each feature works in both editors against the fixture.
+
 ## Testing
 
 - Unit tests (gleeunit) for DAP message framing and JSON codecs, name
@@ -291,12 +306,13 @@ following the README.
 
 ## Risks and open questions
 
-- **Line mapping quality.** Gleam constructs like `use`, pipelines and
-  inlined calls may not line up neatly with the generated Erlang. Function-level
-  breakpoints are the fallback; the spike tells us how much we need it.
-- **Compiler output changes.** The mapping relies on the shape of Gleam's
-  generated Erlang. We pin a tested Gleam version range and keep fixtures to
-  catch changes.
+- **Depending on Gleam 1.19.** Line numbers rely on the abstract forms
+  Gleam has generated since 1.19 and on OTP 27 or newer. Older Gleam versions
+  would need one of the mapping approaches in
+  [docs/line-mapping.md](docs/line-mapping.md).
+- **Compiler output changes.** Names, values and stepping fixes rely on the
+  shape of Gleam's generated code (`X@1`, `_pipe`, tuples for records). We pin
+  a tested Gleam version range and keep fixtures to catch changes.
 - **`int` speed.** Interpreted code is much slower. Interpreting only the
   project's own modules by default keeps this manageable.
 - **OTP processes.** Code running inside actors and supervisors should work
