@@ -49,3 +49,18 @@ fn count_down(n: Int) -> Nil {
     _ -> count_down(n - 1)
   }
 }
+
+/// Runs until stopped, calling into another module every few
+/// milliseconds, for attaching to a running node.
+pub fn serve_main() -> Nil {
+  serve(0)
+}
+
+fn serve(n: Int) -> Nil {
+  let _ = flow.double(n)
+  sleep(20)
+  serve(n + 1)
+}
+
+@external(erlang, "sample_ffi", "sleep")
+fn sleep(ms: Int) -> Nil

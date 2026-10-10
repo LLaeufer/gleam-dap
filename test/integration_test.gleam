@@ -1,5 +1,6 @@
 //// End-to-end tests: a real adapter debugging the fixture project.
 
+import gleam/dynamic
 import gleam/dynamic/decode
 import gleam/list
 import gleam/string
@@ -397,4 +398,49 @@ fn result_is_ok(r: Result(a, b)) -> Bool {
     Ok(_) -> True
     Error(_) -> False
   }
+}
+
+pub fn debug_break_test() {
+  let client = launch([#("module", JString("sample/debugging"))])
+  let _ = request(client, "configurationDone", [])
+  let #(thread, reason, frames) = wait_stop(client)
+  assert reason == "breakpoint"
+  // The stop is reported on the line after the call, in the caller.
+  assert top(frames) == #("sample/debugging.main", 9)
+  let _ = request(client, "continue", thread_arg(thread))
+  let _ = wait_event(client, "terminated")
+  finish(client)
+}
+
+@external(erlang, "test_ffi", "start_target")
+fn start_target(cookie: String) -> String
+
+@external(erlang, "test_ffi", "stop_target")
+fn stop_target(node: String, cookie: String) -> dynamic.Dynamic
+
+pub fn attach_test() {
+  let cookie = "gleam_dap_test"
+  let node = start_target(cookie)
+  let client = dap_client.start_and_initialize()
+  let response =
+    request(client, "attach", [
+      #("projectDir", JString(dap_client.fixture())),
+      #("node", JString(node)),
+      #("cookie", JString(cookie)),
+    ])
+  assert dap_client.success(response)
+  let _ = wait_event(client, "initialized")
+  let _ =
+    request(client, "setBreakpoints", [
+      #("source", source("sample/flow.gleam")),
+      #("breakpoints", breakpoints([7])),
+    ])
+  let _ = request(client, "configurationDone", [])
+  let #(_, reason, frames) = wait_stop(client)
+  assert reason == "breakpoint"
+  assert top(frames) == #("sample/flow.double", 7)
+  let _ = request(client, "disconnect", [#("terminateDebuggee", JBool(False))])
+  dap_client.stop(client)
+  // Detaching leaves nothing interpreted on the node.
+  assert stop_target(node, cookie) == dynamic.list([])
 }

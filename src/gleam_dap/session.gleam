@@ -62,6 +62,8 @@ pub type StopInfo {
 pub type Stepping {
   SimpleStep
   Over(stepping.StepOver)
+  /// Running on from `debug.break()` to the caller's next line.
+  DebugBreak
 }
 
 pub type LineBreakpoint {
@@ -102,6 +104,8 @@ pub type State {
     int_breaks: Set(#(String, Int)),
     /// Temporary breakpoint for `stopOnEntry`.
     entry_break: Option(#(String, Int)),
+    /// The breakpoint behind `debug.break()`, when the project uses it.
+    debug_break: Option(#(String, Int)),
     next_breakpoint_id: Int,
     exception_filters: List(String),
     threads: threads.Registry,
@@ -134,9 +138,14 @@ fn send_after(ms: Int, f: fn() -> Nil) -> Nil
 @external(erlang, "gleam_dap_ffi", "get_cwd")
 fn get_cwd() -> String
 
+@external(erlang, "gleam_dap_session_ffi", "register")
+fn register(pid: Pid, name: String) -> Bool
+
 /// Runs the adapter on stdio until the client disconnects.
 pub fn run() -> Nil {
   refs_init()
+  // `debug.break()` checks for this name.
+  let _ = register(process.self(), "gleam_dap_session")
   let subject = process.new_subject()
   stdio_start(fn(body) { process.send(subject, Incoming(body)) }, fn() {
     process.send(subject, InputClosed)
@@ -158,6 +167,7 @@ pub fn new_state(subject: Subject(Message)) -> State {
     function_breakpoints: [],
     int_breaks: set.new(),
     entry_break: None,
+    debug_break: None,
     next_breakpoint_id: 1,
     exception_filters: ["gleam"],
     threads: threads.new(),
@@ -364,6 +374,7 @@ fn launch(state: State, request: Request, mode: Mode) -> State {
         config: Some(config),
         index: Some(index),
         interpreted:,
+        debug_break: setup_debug_break(index, config, mode),
       )
       |> capture_output
     }
@@ -409,7 +420,7 @@ fn prepare(
     False -> {
       use _ <- result.try(int_start(config.stack_trace_mode))
       let modules = launch.modules_to_interpret(index, config)
-      let failures = launch.interpret(modules)
+      let failures = launch.interpret(modules, mode == Attach)
       list.each(failures, fn(f) {
         output("console", "Could not interpret " <> f.0 <> ": " <> f.1 <> "\n")
       })
@@ -428,6 +439,40 @@ fn prepare(
     }
   }
 }
+
+@external(erlang, "gleam_dap_int_ffi", "interpret")
+fn int_interpret(
+  module: String,
+  source: String,
+  beam: String,
+  distributed: Bool,
+) -> Result(Nil, String)
+
+/// Interprets the `gleam_dap_debug` package's FFI module, if the project
+/// uses it, and sets the breakpoint `debug.break()` relies on.
+fn setup_debug_break(
+  index: Index,
+  config: Config,
+  mode: Mode,
+) -> Option(#(String, Int)) {
+  let found = {
+    use module <- result.try(project.get_module(index, debug_module))
+    use f <- result.try(project.find_function(module, "stop_here", 0))
+    use line <- result.try(list.first(f.clause_lines))
+    use _ <- result.try(
+      int_interpret(module.module, module.source, module.beam, mode == Attach)
+      |> result.replace_error(Nil),
+    )
+    int_set_break(module.module, line)
+    Ok(#(module.module, line))
+  }
+  case config.no_debug, found {
+    False, Ok(location) -> Some(location)
+    _, _ -> None
+  }
+}
+
+const debug_module = "gleam_dap_debug_ffi"
 
 fn capture_output(state: State) -> State {
   case state.mode {
@@ -1488,6 +1533,20 @@ fn on_break(state: State, pid: Pid, module: String, line: Int) -> State {
   let at_breakpoint = set.contains(state.int_breaks, #(module, line))
   let at_entry = state.entry_break == Some(#(module, line))
   case dict.get(state.stepping, pid) {
+    _ if module == debug_module -> {
+      // Stopped inside `debug.break()`: run on to the caller.
+      int_finish(pid)
+      State(..state, stepping: dict.insert(state.stepping, pid, DebugBreak))
+    }
+    Ok(DebugBreak) ->
+      report_stop(
+        State(..state, stepping: dict.delete(state.stepping, pid)),
+        pid,
+        thread_id,
+        module,
+        line,
+        "breakpoint",
+      )
     Ok(Over(step)) ->
       case current_frame(pid, module, line) {
         Ok(frame) ->

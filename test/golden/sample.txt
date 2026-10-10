@@ -6,6 +6,10 @@ sample src/sample.gleam
   panic_main/0 lines 37-39: 38 39
   loop_main/0 lines 42-43: 43
   count_down/1 lines 46-49: 47 48 49
+  serve_main/0 lines 55-56: 56
+  serve/1 lines 59-62: 60 61 62
+sample@debugging src/sample/debugging.gleam
+  main/0 lines 6-9: 7 8 9
 sample@flow src/sample/flow.gleam
   double/1 lines 6-7: 7
   pipes/1 lines 10-13: 11 12 13

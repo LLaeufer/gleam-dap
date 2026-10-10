@@ -46,9 +46,14 @@ pub fn launch(options: List(#(String, Json))) -> Client {
   launch_project(fixture(), options)
 }
 
-pub fn launch_project(dir: String, options: List(#(String, Json))) -> Client {
+pub fn start_and_initialize() -> Client {
   let client = start_client()
   let _ = request(client, "initialize", [#("adapterID", JString("gleam"))])
+  client
+}
+
+pub fn launch_project(dir: String, options: List(#(String, Json))) -> Client {
+  let client = start_and_initialize()
   let response =
     request(client, "launch", [#("projectDir", JString(dir)), ..options])
   let assert True = success(response)

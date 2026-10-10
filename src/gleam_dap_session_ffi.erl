@@ -1,5 +1,6 @@
 -module(gleam_dap_session_ffi).
--export([or_none/1, spawn_worker/1, detach_all/0, is_shutdown/1, is_normal/1]).
+-export([or_none/1, spawn_worker/1, detach_all/0, is_shutdown/1, is_normal/1,
+         register/2]).
 
 %% Option(String) to a binary or the atom `none`, for the Erlang side.
 or_none({some, V}) -> V;
@@ -24,3 +25,8 @@ is_shutdown(_) -> false.
 
 is_normal(normal) -> true;
 is_normal(_) -> false.
+
+register(Pid, Name) ->
+    try erlang:register(binary_to_atom(Name, utf8), Pid)
+    catch _:_ -> false
+    end.

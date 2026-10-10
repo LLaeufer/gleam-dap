@@ -282,6 +282,7 @@ fn int_interpret(
   module: String,
   source: String,
   beam: String,
+  distributed: Bool,
 ) -> Result(Nil, String)
 
 @external(erlang, "gleam_dap_launch_ffi", "loaded_elsewhere")
@@ -307,11 +308,15 @@ pub fn modules_to_interpret(index: Index, config: Config) -> List(ModuleInfo) {
   })
 }
 
-/// Interprets modules in parallel. Returns the failures.
-pub fn interpret(modules: List(ModuleInfo)) -> List(#(String, String)) {
+/// Interprets modules in parallel, on all connected nodes when
+/// `distributed`. Returns the failures.
+pub fn interpret(
+  modules: List(ModuleInfo),
+  distributed: Bool,
+) -> List(#(String, String)) {
   modules
   |> parallel_map(fn(module) {
-    case int_interpret(module.module, module.source, module.beam) {
+    case int_interpret(module.module, module.source, module.beam, distributed) {
       Ok(Nil) -> Ok(Nil)
       Error(reason) -> Error(#(names.module_to_gleam(module.module), reason))
     }

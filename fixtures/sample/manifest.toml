@@ -7,6 +7,8 @@
 # You should check this file into your source control repository.
 
 packages = [
+  { name = "gleam_dap_debug", version = "0.1.0", build_tools = ["gleam"], requirements = [], source = "local", path = "../../packages/gleam_dap_debug" },
 ]
 
 [requirements]
+gleam_dap_debug = { path = "../../packages/gleam_dap_debug" }

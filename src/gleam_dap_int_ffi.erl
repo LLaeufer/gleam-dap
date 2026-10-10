@@ -2,7 +2,7 @@
 -module(gleam_dap_int_ffi).
 
 -export([
-    start/1, analyse/1, interpret/3, uninterpret/1, interpreted/0,
+    start/1, analyse/1, interpret/4, uninterpret/1, interpreted/0,
     set_break/2, delete_break/2, set_condition/3,
     auto_attach/1, on_attach/2, release/1,
     get_meta/1, continue/1, next/1, step/1, finish/1, stop/1,
@@ -132,12 +132,13 @@ line(A) ->
 
 %% Gleam 1.19 BEAM files record no source, so `int:i(Module)` can't find
 %% one. We pass the Gleam path explicitly.
-interpret(Module, Source, BeamPath) ->
+interpret(Module, Source, BeamPath, Distributed) ->
     Mod = binary_to_atom(Module, utf8),
     case file:read_file(BeamPath) of
         {ok, Bin} ->
             _ = code:ensure_loaded(Mod),
-            try int:i({Mod, binary_to_list(Source), binary_to_list(BeamPath), Bin}) of
+            Abs = {Mod, binary_to_list(Source), binary_to_list(BeamPath), Bin},
+            try case Distributed of true -> int:ni(Abs); false -> int:i(Abs) end of
                 {module, Mod} -> {ok, nil};
                 error -> {error, <<"int refused to interpret the module">>};
                 Other -> {error, gleam_dap_ffi:format_term(Other, 10)}
