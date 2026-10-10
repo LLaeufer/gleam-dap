@@ -55,6 +55,75 @@ small sample project.
 6. **Module names:** `src/foo/bar.gleam` compiles to the Erlang module
    `foo@bar`.
 
+## Approach: our own adapter on `int` or adapting ElixirLS
+
+The two options are less different than they look. ElixirLS's debug adapter
+is itself built on `int`: it calls `:int.ni`, `:int.break`,
+`:int.auto_attach`, `:int.meta`, `:int.snapshot` and friends, exactly the API
+our own adapter would use. So the real choice is between writing the DAP and
+session layer ourselves in Gleam, or taking ElixirLS's existing one (written
+in Elixir) and teaching it about Gleam.
+
+What ElixirLS's debug adapter is, as of its `master` in August 2026:
+
+- About 5,500 lines of Elixir in `apps/debug_adapter`, 3,400 of them in one
+  `server.ex`. Apache-2.0 licensed, so forking it is fine.
+- Supports launch and attach (including remote nodes), line and function
+  breakpoints, conditions, hit counts and logpoints, step in/over/out, pause,
+  per-process threads, stack traces, variables, evaluate and completions in
+  the debug console, and stdout capture.
+- Starts programs through Mix: `launch` runs Mix's `compile` and `app.start`
+  and then a Mix task. Gleam projects have no Mix project.
+- Finds the module for a breakpoint through the `source` recorded in each
+  BEAM file. For Gleam that is the generated `.erl` file, not the `.gleam`
+  file. It also handles `.erl` files directly.
+- Evaluates expressions with `Code.eval_string`, so the debug console speaks
+  Elixir.
+
+### The Gleam-specific work is the same either way
+
+Line mapping between `.gleam` and generated `.erl` lines, demangling `X@1`
+into `x`, rendering records and `Option`/`Result` the Gleam way, and reading
+Gleam error maps are all needed in both approaches. Neither `int` nor
+ElixirLS knows anything about Gleam. Step 3 of this plan is the same amount
+of work whichever way we go. The difference is in steps 2 and 4.
+
+### Comparison
+
+| | Own adapter in Gleam on `int` | Adapt ElixirLS's debug adapter |
+| --- | --- | --- |
+| **Time to first breakpoint** | Slower. The DAP transport, session state, thread and variable bookkeeping need writing (step 2). | Faster for raw DAP features, which already work. But launch has to be rewritten first, because it assumes a Mix project. |
+| **Feature set** | Only what we build. Conditions, logpoints, attach and evaluate come later, if at all. | A lot for free: function breakpoints, conditions, hit counts, logpoints, attach to remote nodes, pause, completions. |
+| **Fitting Gleam in** | Gleam concepts are built in from the start. Line mapping, names and values sit in the core instead of being bolted on. | Needs changes in many places: breakpoint-to-module lookup, stack frame paths, variable naming and rendering, error reporting. Most of that lives in one large `server.ex`. |
+| **Debug console** | No evaluate at first. Erlang evaluation via `erl_eval` is cheap to add later. | Evaluate works, but in Elixir syntax, which is confusing in a Gleam session. Gleam evaluation is hard in both. |
+| **Runtime requirements** | Erlang/OTP with `debugger`, which Gleam users already have. | Additionally Elixir and Mix at runtime, plus ElixirLS's own dependencies, which Gleam users may not have installed. |
+| **Language of the code** | Gleam, which is the language you want to get better at. | Elixir. |
+| **Maintenance** | Small codebase we fully understand. Only `int` and Gleam's compiler output can break it. | A fork of an actively developed project. Pulling in upstream changes means merging into a heavily modified `server.ex`; not merging means the fork slowly goes stale. |
+| **Editor integration** | We write a small VS Code extension and an LSP4IJ config. | ElixirLS's VS Code extension is tied to Elixir and the language server, so we would still write our own small extension. LSP4IJ config is the same work either way. |
+| **Learning value** | High: DAP, `int` and OTP from the inside. | Lower on the DAP side, higher on reading a mature codebase. |
+
+### Recommendation
+
+Write our own adapter in Gleam on `int`, and use ElixirLS as the reference
+implementation rather than as a base.
+
+- The hard and interesting part, making `int` understand Gleam, is the same
+  in both approaches, and fits more naturally into a codebase designed around
+  it.
+- The part ElixirLS saves us, the DAP and session layer, is the most
+  mechanical part and is well specified by the protocol.
+- Mix coupling, Elixir at runtime and a large fork to maintain cost more than
+  the free features are worth for a personal tool.
+- ElixirLS is still valuable to read: how it handles `int` edge cases,
+  process and thread bookkeeping, output capture, breakpoint conditions and
+  attach. When we hit a problem there, we check how it solved it first.
+
+**When adapting ElixirLS would win:** if you want the full feature set
+(conditions, logpoints, attach) soon, and don't mind Elixir and Mix being
+installed. A cheap way to check this path is in step 1: see whether
+ElixirLS can stop on a breakpoint set in a Gleam module's generated `.erl`
+file, since it already supports `.erl` sources. That is likely but untested.
+
 ## Architecture
 
 ```
@@ -100,6 +169,9 @@ them.
   backtrace at each stop.
 - A first experiment with line mapping (step 3) on the fixture, to see how
   well Gleam statements line up with the generated Erlang.
+- Optional: check whether ElixirLS can stop on a breakpoint in a Gleam
+  module's generated `.erl` file, to confirm the alternative approach is
+  viable before ruling it out.
 - Check the oldest OTP version we want to support, and whether OTP 26 and 27
   behave the same as OTP 25.
 
