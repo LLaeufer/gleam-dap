@@ -41,6 +41,13 @@ pub fn string_comparison_test() {
   assert eval("name == \"Ada\"", [#("Name", d("Ada"))]) == Ok(d(True))
 }
 
+pub fn string_concat_test() {
+  let bindings = [#("Name", d("Ada"))]
+  assert eval("\"Hello, \" <> name <> \"!\"", bindings) == Ok(d("Hello, Ada!"))
+  assert eval("[1] <> [2]", []) == Ok(d([1, 2]))
+  assert eval("<<>> == \"\"", []) == Ok(d(True))
+}
+
 pub fn field_access_test() {
   set_labels([#(#("person", 2), #("Person", ["name", "age"]))])
   let bindings = [#("P", d(Person("Ada", 36))), #("Pair", d(#(1, Some(2))))]

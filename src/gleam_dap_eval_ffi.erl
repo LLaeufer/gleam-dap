@@ -3,13 +3,13 @@
 %%
 %% Expressions are Erlang expressions with a thin Gleam layer on top:
 %% Gleam variable names (`x` for the latest `X@N`), `True`/`False`/`Nil`,
-%% Gleam strings, `!=`, `&&`, `||`, field access (`person.name`,
+%% Gleam strings, `<>`, `!=`, `&&`, `||`, field access (`person.name`,
 %% `pair.0`) and module calls (`list.length(xs)`).
 -module(gleam_dap_eval_ffi).
 
 -export([
     eval/2, set_labels/1, field/2,
-    set_conditions/2, check/2, interpolate/2
+    set_conditions/2, check/2, interpolate/2, append/2
 ]).
 
 -define(EVAL_TIMEOUT, 5000).
@@ -29,7 +29,7 @@ eval_now(Source, Bindings) ->
     try
         Tokens = tokens(Source, Bindings),
         {ok, Exprs} = case erl_parse:parse_exprs(Tokens) of
-            {ok, _} = Ok -> Ok;
+            {ok, Parsed} -> {ok, concat_ops(Parsed)};
             {error, {_, Mod, Desc}} -> throw({syntax, Mod:format_error(Desc)})
         end,
         Bs = lists:foldl(fun({K, V}, Acc) ->
@@ -70,6 +70,10 @@ tokens(Source, Bindings) ->
             throw({syntax, Mod:format_error(Desc)})
     end.
 
+%% Gleam's `<>` becomes `++`, which concat_ops/1 then turns into append/2
+%% so it works on strings (binaries) as well as lists.
+rewrite_operators("<<>>" ++ Rest) -> "<<>>" ++ rewrite_operators(Rest);
+rewrite_operators("<>" ++ Rest) -> " ++ " ++ rewrite_operators(Rest);
 rewrite_operators("!=" ++ Rest) -> "/=" ++ rewrite_operators(Rest);
 rewrite_operators("&&" ++ Rest) -> " andalso " ++ rewrite_operators(Rest);
 rewrite_operators("||" ++ Rest) -> " orelse " ++ rewrite_operators(Rest);
@@ -78,6 +82,18 @@ rewrite_operators([$" | Rest]) ->
     [$" | String] ++ rewrite_operators(After);
 rewrite_operators([C | Rest]) -> [C | rewrite_operators(Rest)];
 rewrite_operators([]) -> [].
+
+concat_ops({op, L, '++', A, B}) ->
+    {call, L, {remote, L, {atom, L, ?MODULE}, {atom, L, append}},
+     [concat_ops(A), concat_ops(B)]};
+concat_ops(T) when is_tuple(T) ->
+    list_to_tuple(concat_ops(tuple_to_list(T)));
+concat_ops(L) when is_list(L) ->
+    [concat_ops(X) || X <- L];
+concat_ops(Other) -> Other.
+
+append(A, B) when is_binary(A), is_binary(B) -> <<A/binary, B/binary>>;
+append(A, B) -> A ++ B.
 
 string_literal([$\\, C | Rest], Acc) -> string_literal(Rest, [C, $\\ | Acc]);
 string_literal([$" | Rest], Acc) -> {lists:reverse([$" | Acc]), Rest};

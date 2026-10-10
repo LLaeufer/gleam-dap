@@ -1,6 +1,7 @@
 -module(test_ffi).
 -export([to_dynamic/1, make_pid/0, make_fun/0, bits/0, improper/0, map/0,
-         write_file/2, get_env/1, start_target/1, stop_target/2]).
+         write_file/2, get_env/1, start_target/1, stop_target/2,
+         target_down/2]).
 
 to_dynamic(X) -> X.
 make_pid() -> list_to_pid("<0.42.0>").
@@ -32,6 +33,24 @@ start_target(Cookie) ->
 
 %% Asks the node for its interpreted modules, then stops it.
 stop_target(Node, Cookie) ->
+    NodeAtom = probe(Node, Cookie),
+    Interpreted = rpc:call(NodeAtom, int, interpreted, []),
+    rpc:call(NodeAtom, init, stop, []),
+    Interpreted.
+
+%% True once the node has gone away (waits up to five seconds).
+target_down(Node, Cookie) ->
+    NodeAtom = probe(Node, Cookie),
+    wait_down(NodeAtom, 50).
+
+wait_down(_, 0) -> false;
+wait_down(Node, N) ->
+    case net_adm:ping(Node) of
+        pang -> true;
+        pong -> timer:sleep(100), wait_down(Node, N - 1)
+    end.
+
+probe(Node, Cookie) ->
     NodeAtom = binary_to_atom(Node, utf8),
     case node() of
         nonode@nohost ->
@@ -41,6 +60,4 @@ stop_target(Node, Cookie) ->
         _ -> ok
     end,
     erlang:set_cookie(NodeAtom, binary_to_atom(Cookie, utf8)),
-    Interpreted = rpc:call(NodeAtom, int, interpreted, []),
-    rpc:call(NodeAtom, init, stop, []),
-    Interpreted.
+    NodeAtom.

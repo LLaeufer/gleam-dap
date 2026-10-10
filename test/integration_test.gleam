@@ -447,6 +447,9 @@ fn start_target(cookie: String) -> String
 @external(erlang, "test_ffi", "stop_target")
 fn stop_target(node: String, cookie: String) -> dynamic.Dynamic
 
+@external(erlang, "test_ffi", "target_down")
+fn target_down(node: String, cookie: String) -> Bool
+
 pub fn attach_test() {
   attach_with("attach")
 }
@@ -481,4 +484,24 @@ fn attach_with(command: String) {
   dap_client.stop(client)
   // Detaching leaves nothing interpreted on the node.
   assert stop_target(node, cookie) == dynamic.list([])
+}
+
+pub fn terminate_attached_node_test() {
+  let cookie = "gleam_dap_test"
+  let node = start_target(cookie)
+  let client = dap_client.start_and_initialize()
+  let response =
+    request(client, "attach", [
+      #("projectDir", JString(dap_client.fixture())),
+      #("node", JString(node)),
+      #("cookie", JString(cookie)),
+    ])
+  assert dap_client.success(response)
+  let _ = wait_event(client, "initialized")
+  let _ = request(client, "configurationDone", [])
+  let _ = request(client, "terminate", [])
+  let _ = wait_event(client, "terminated")
+  let _ = request(client, "disconnect", [])
+  dap_client.stop(client)
+  assert target_down(node, cookie)
 }

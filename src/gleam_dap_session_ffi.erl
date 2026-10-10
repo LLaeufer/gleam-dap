@@ -1,6 +1,6 @@
 -module(gleam_dap_session_ffi).
--export([or_none/1, spawn_worker/1, detach_all/0, is_shutdown/1, is_normal/1,
-         register/2]).
+-export([or_none/1, spawn_worker/1, detach_all/0, stop_node/1, is_shutdown/1,
+         is_normal/1, register/2]).
 
 %% Option(String) to a binary or the atom `none`, for the Erlang side.
 or_none({some, V}) -> V;
@@ -15,6 +15,12 @@ detach_all() ->
     catch int:auto_attach(false),
     catch int:no_break(),
     catch int:nn(int:interpreted()),
+    nil.
+
+%% Stops an attached node, for "terminate" in an attach session.
+stop_node(<<>>) -> nil;
+stop_node(Node) ->
+    catch rpc:call(binary_to_atom(Node, utf8), init, stop, [], 2000),
     nil.
 
 is_shutdown(shutdown) -> true;

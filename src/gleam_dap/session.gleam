@@ -814,16 +814,13 @@ pub fn find_function_breakpoint(
   index: Index,
   name: String,
 ) -> Result(#(ModuleInfo, List(Int)), String) {
-  let #(function_part, arity) = case string.split_once(name, "/") {
-    _ ->
-      case list.reverse(string.split(name, "/")) {
-        [last, ..rest] ->
-          case int.parse(last) {
-            Ok(arity) -> #(string.join(list.reverse(rest), "/"), Some(arity))
-            Error(Nil) -> #(name, None)
-          }
-        [] -> #(name, None)
+  let #(function_part, arity) = case list.reverse(string.split(name, "/")) {
+    [last, ..rest] ->
+      case int.parse(last) {
+        Ok(arity) -> #(string.join(list.reverse(rest), "/"), Some(arity))
+        Error(Nil) -> #(name, None)
       }
+    [] -> #(name, None)
   }
   let #(module_name, function) = case
     string.split(function_part, ".") |> list.reverse
@@ -1497,6 +1494,10 @@ fn stop_program(state: State) -> State {
     }
     None -> Nil
   }
+  case state.mode, state.config {
+    Attach, Some(config) -> stop_node(config.node)
+    _, _ -> Nil
+  }
   case state.program_state {
     Finished -> state
     _ -> {
@@ -1508,6 +1509,9 @@ fn stop_program(state: State) -> State {
 
 @external(erlang, "gleam_dap_session_ffi", "detach_all")
 fn detach_all() -> Nil
+
+@external(erlang, "gleam_dap_session_ffi", "stop_node")
+fn stop_node(node: String) -> Nil
 
 fn disconnect(state: State, request: Request) -> State {
   let decoder = {
