@@ -83,8 +83,7 @@ fn render_classified(term: Term, options: Options, depth: Int) -> String {
         Error(Nil) -> render_bytes(bits, options)
       }
     TBitstring(_, size) -> "<<…:size(" <> int.to_string(size) <> ")>>"
-    TList(items) ->
-      "[" <> render_items(items, options, depth) <> "]"
+    TList(items) -> "[" <> render_items(items, options, depth) <> "]"
     TImproperList(items, tail) ->
       "["
       <> render_items(items, options, depth)
@@ -147,7 +146,9 @@ fn render_record(
     [] -> constructor.name
     _ -> {
       let rendered = list.map(fields, render_term(_, options, depth - 1))
-      let rendered = case list.length(constructor.labels) == list.length(fields) {
+      let rendered = case
+        list.length(constructor.labels) == list.length(fields)
+      {
         True ->
           list.map2(constructor.labels, rendered, fn(label, value) {
             label <> ": " <> value
@@ -159,7 +160,11 @@ fn render_record(
   }
 }
 
-pub fn lookup_constructor(labels: Labels, tag: String, arity: Int) -> Constructor {
+pub fn lookup_constructor(
+  labels: Labels,
+  tag: String,
+  arity: Int,
+) -> Constructor {
   case dict.get(labels, #(tag, arity)) {
     Ok(constructor) -> constructor
     Error(Nil) -> Constructor(names.constructor_name(tag), [])
@@ -330,7 +335,8 @@ pub fn type_name(term: Dynamic, options: Options) -> String {
     TList(_) | TImproperList(_, _) -> "List"
     TTuple([first, ..rest]) ->
       case classify(first) {
-        TAtom(tag) -> lookup_constructor(options.labels, tag, list.length(rest)).name
+        TAtom(tag) ->
+          lookup_constructor(options.labels, tag, list.length(rest)).name
         _ -> "Tuple"
       }
     TTuple([]) -> "Tuple"

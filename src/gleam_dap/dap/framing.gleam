@@ -34,11 +34,7 @@ fn parse_loop(
             True -> {
               let assert Ok(body) = bit_array.slice(buffer, body_start, length)
               let assert Ok(rest) =
-                bit_array.slice(
-                  buffer,
-                  body_start + length,
-                  available - length,
-                )
+                bit_array.slice(buffer, body_start + length, available - length)
               parse_loop(rest, [body, ..acc])
             }
           }

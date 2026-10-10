@@ -121,7 +121,9 @@ pub fn decode_config(
   |> result.map_error(fn(errors) {
     "Invalid launch configuration: "
     <> errors
-    |> list.map(fn(e) { string.join(e.path, ".") <> " should be " <> e.expected })
+    |> list.map(fn(e) {
+      string.join(e.path, ".") <> " should be " <> e.expected
+    })
     |> string.join(", ")
   })
   |> result.try(fn(config) {
@@ -161,7 +163,8 @@ pub fn parse_gleam_version(output: String) -> Result(#(Int, Int, Int), Nil) {
 
 pub fn gleam_version_ok(version: #(Int, Int, Int)) -> Bool {
   let #(major, minor, _) = version
-  major > minimum_gleam.0 || { major == minimum_gleam.0 && minor >= minimum_gleam.1 }
+  major > minimum_gleam.0
+  || { major == minimum_gleam.0 && minor >= minimum_gleam.1 }
 }
 
 @external(erlang, "gleam_dap_ffi", "otp_release")
@@ -206,12 +209,9 @@ pub fn check_versions(config: Config) -> Result(Nil, String) {
     False -> Ok(Nil)
     True -> {
       use gleam <- result.try(gleam_executable(config))
-      use #(status, output) <- result.try(run_command(
-        gleam,
-        ["--version"],
-        config.project_dir,
-        [],
-      ))
+      use #(status, output) <- result.try(
+        run_command(gleam, ["--version"], config.project_dir, []),
+      )
       case status, parse_gleam_version(output) {
         0, Ok(version) ->
           case gleam_version_ok(version) {
@@ -246,12 +246,14 @@ pub fn build(config: Config) -> Result(String, String) {
     False -> Ok("")
     True -> {
       use gleam <- result.try(gleam_executable(config))
-      use #(status, output) <- result.try(run_command(
-        gleam,
-        ["build", "--target", "erlang"],
-        config.project_dir,
-        [],
-      ))
+      use #(status, output) <- result.try(
+        run_command(
+          gleam,
+          ["build", "--target", "erlang"],
+          config.project_dir,
+          [],
+        ),
+      )
       case status {
         0 -> Ok(output)
         _ -> Error(output)
@@ -331,7 +333,9 @@ pub fn interpret(
 }
 
 fn log_failures(failures: List(#(String, String))) -> List(#(String, String)) {
-  list.each(failures, fn(f) { log.info("Could not interpret " <> f.0 <> ": " <> f.1) })
+  list.each(failures, fn(f) {
+    log.info("Could not interpret " <> f.0 <> ": " <> f.1)
+  })
   failures
 }
 

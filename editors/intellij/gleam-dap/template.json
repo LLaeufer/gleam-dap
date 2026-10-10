@@ -1,0 +1,35 @@
+{
+  "id": "gleam-dap",
+  "name": "Gleam (gleam-dap)",
+  "programArgs": {
+    "default": "/path/to/gleam-dap/dist/gleam-dap/bin/gleam-dap"
+  },
+  "fileTypeMappings": [
+    {
+      "fileType": {
+        "name": "Gleam",
+        "patterns": ["*.gleam"]
+      },
+      "languageId": "gleam"
+    }
+  ],
+  "launchConfigurations": [
+    {
+      "id": "gleam-launch",
+      "name": "Debug Gleam project",
+      "file": "launch.json"
+    },
+    {
+      "id": "gleam-test",
+      "name": "Debug Gleam tests",
+      "file": "test.json"
+    }
+  ],
+  "attachConfigurations": [
+    {
+      "id": "gleam-attach",
+      "name": "Attach to Gleam node",
+      "file": "attach.json"
+    }
+  ]
+}

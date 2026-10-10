@@ -32,13 +32,15 @@ pub fn parse_partial_header_test() {
 }
 
 pub fn parse_complete_then_partial_test() {
-  let buffer = bit_array.concat([frame("1"), <<"Content-Length: 5\r\n\r\nab":utf8>>])
+  let buffer =
+    bit_array.concat([frame("1"), <<"Content-Length: 5\r\n\r\nab":utf8>>])
   assert framing.parse(buffer)
     == #([<<"1">>], <<"Content-Length: 5\r\n\r\nab":utf8>>)
 }
 
 pub fn parse_header_case_and_extra_headers_test() {
-  let buffer =
-    <<"content-length: 2\r\nContent-Type: application/json\r\n\r\n{}":utf8>>
+  let buffer = <<
+    "content-length: 2\r\nContent-Type: application/json\r\n\r\n{}":utf8,
+  >>
   assert framing.parse(buffer) == #([<<"{}">>], <<>>)
 }

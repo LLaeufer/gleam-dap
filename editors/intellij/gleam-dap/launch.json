@@ -1,0 +1,6 @@
+{
+  "type": "gleam",
+  "request": "launch",
+  "name": "Debug Gleam project",
+  "projectDir": "${workspaceFolder}"
+}

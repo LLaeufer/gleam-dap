@@ -50,7 +50,9 @@ pub type Index {
 }
 
 @external(erlang, "gleam_dap_int_ffi", "analyse")
-fn analyse(beam: String) -> Result(#(String, String, List(FunctionInfo)), String)
+fn analyse(
+  beam: String,
+) -> Result(#(String, String, List(FunctionInfo)), String)
 
 @external(erlang, "gleam_dap_ffi", "read_file")
 fn read_file(path: String) -> Result(String, Nil)

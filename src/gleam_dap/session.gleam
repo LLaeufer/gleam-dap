@@ -509,7 +509,8 @@ fn configuration_done(state: State, request: Request) -> State {
     Some(config), Some(index) -> {
       case config.no_debug {
         True -> Nil
-        False -> int_auto_attach(fn(event) { process.send(subject, Int(event)) })
+        False ->
+          int_auto_attach(fn(event) { process.send(subject, Int(event)) })
       }
       respond(request, None)
       case state.mode {
@@ -542,7 +543,9 @@ fn start_program(state: State, config: Config, index: Index) -> State {
     }
     _, _ -> spawn_program(entry, config.function, [], stdout)
   }
-  watch_process(pid, fn(reason) { process.send(subject, ProgramDown(pid, reason)) })
+  watch_process(pid, fn(reason) {
+    process.send(subject, ProgramDown(pid, reason))
+  })
   let #(registry, id, _) = threads.id_for(state.threads, pid)
   log.info("started program, thread " <> int.to_string(id))
   State(..state, threads: registry, program: Some(pid), program_state: Running)
@@ -818,8 +821,10 @@ pub fn find_function_breakpoint(
   let #(module_name, function) = case
     string.split(function_part, ".") |> list.reverse
   {
-    [function, module, ..rest] ->
-      #(Some(string.join(list.reverse([module, ..rest]), ".")), function)
+    [function, module, ..rest] -> #(
+      Some(string.join(list.reverse([module, ..rest]), ".")),
+      function,
+    )
     _ -> #(None, function_part)
   }
   let candidates = case module_name {
@@ -889,7 +894,13 @@ fn sync_breaks(state: State) -> State {
       case b.location {
         Ok(#(module, lines)) ->
           list.map(lines, fn(line) {
-            DesiredBreak(module.module, line, b.condition, b.hit_condition, None)
+            DesiredBreak(
+              module.module,
+              line,
+              b.condition,
+              b.hit_condition,
+              None,
+            )
           })
         Error(_) -> []
       }
@@ -930,7 +941,12 @@ fn sync_breaks(state: State) -> State {
   set_conditions(
     list.map(conditions, fn(c) {
       let #(slot, b) = c
-      #(slot, or_none(b.condition), or_none(b.hit_condition), or_none(b.log_message))
+      #(
+        slot,
+        or_none(b.condition),
+        or_none(b.hit_condition),
+        or_none(b.log_message),
+      )
     }),
     #(fn(text) { output("console", text <> "\n") }, fn(text) {
       output("stderr", text <> "\n")
@@ -1210,7 +1226,8 @@ fn exception_info(state: State, request: Request) -> State {
       pid_for_thread(state, thread_id) |> result.replace_error("Unknown thread"),
     )
     case dict.get(state.stopped, pid) {
-      Ok(CrashStop(reason, _, _)) -> Ok(inspect.exception_info_body(ctx, reason))
+      Ok(CrashStop(reason, _, _)) ->
+        Ok(inspect.exception_info_body(ctx, reason))
       _ -> Error("The thread is not stopped on an exception")
     }
   }
@@ -1260,10 +1277,7 @@ fn continue_request(state: State, request: Request) -> State {
     // Like ElixirLS, resuming one thread resumes all paused threads.
     False, _ -> dict.keys(state.stopped)
   }
-  respond(
-    request,
-    Some(JObject([#("allThreadsContinued", JBool(!single))])),
-  )
+  respond(request, Some(JObject([#("allThreadsContinued", JBool(!single))])))
   list.fold(pids, state, resume)
 }
 
@@ -1301,11 +1315,17 @@ fn step_request(state: State, request: Request, kind: String) -> State {
           case kind {
             "stepIn" -> {
               int_step(pid)
-              State(..state, stepping: dict.insert(state.stepping, pid, SimpleStep))
+              State(
+                ..state,
+                stepping: dict.insert(state.stepping, pid, SimpleStep),
+              )
             }
             "stepOut" -> {
               int_finish(pid)
-              State(..state, stepping: dict.insert(state.stepping, pid, SimpleStep))
+              State(
+                ..state,
+                stepping: dict.insert(state.stepping, pid, SimpleStep),
+              )
             }
             _ -> start_step_over(state, pid, module, line)
           }
@@ -1323,7 +1343,11 @@ fn step_request(state: State, request: Request, kind: String) -> State {
   }
 }
 
-fn current_frame(pid: Pid, module: String, line: Int) -> Result(stepping.Frame, Nil) {
+fn current_frame(
+  pid: Pid,
+  module: String,
+  line: Int,
+) -> Result(stepping.Frame, Nil) {
   use meta <- result.try(int_get_meta(pid))
   use #(level, _module, function, arity) <- result.try(
     int_top_frame(meta) |> result.replace_error(Nil),
@@ -1420,7 +1444,11 @@ fn terminate_threads(state: State, request: Request) -> State {
 
 fn cancel(state: State, request: Request) -> State {
   let decoder = {
-    use id <- decode.optional_field("requestId", None, decode.optional(decode.int))
+    use id <- decode.optional_field(
+      "requestId",
+      None,
+      decode.optional(decode.int),
+    )
     decode.success(id)
   }
   use id <- decode_args(request, decoder, _, state)
@@ -1594,7 +1622,11 @@ fn on_break(state: State, pid: Pid, module: String, line: Int) -> State {
         },
       )
     Error(Nil) -> {
-      let reason = case set.contains(state.pausing, pid), at_entry, at_breakpoint {
+      let reason = case
+        set.contains(state.pausing, pid),
+        at_entry,
+        at_breakpoint
+      {
         True, _, _ -> "pause"
         _, True, False -> "entry"
         _, _, _ -> "breakpoint"
@@ -1645,7 +1677,10 @@ fn report_stop(
     <> int.to_string(thread_id),
   )
   send_event(protocol.stopped_event(reason, thread_id, None, None, hit))
-  State(..state, stopped: dict.insert(state.stopped, pid, StoppedAt(module, line)))
+  State(
+    ..state,
+    stopped: dict.insert(state.stopped, pid, StoppedAt(module, line)),
+  )
 }
 
 fn breakpoint_ids_at(state: State, module: String, line: Int) -> List(Int) {
@@ -1691,16 +1726,22 @@ fn on_exit(
             Error(_) -> "crashed"
           }
           log.info("stopped on crash: " <> description)
-          send_event(protocol.stopped_event(
-            "exception",
-            thread_id,
-            Some(description),
-            Some(description),
-            [],
-          ))
+          send_event(
+            protocol.stopped_event(
+              "exception",
+              thread_id,
+              Some(description),
+              Some(description),
+              [],
+            ),
+          )
           State(
             ..state,
-            stopped: dict.insert(state.stopped, pid, CrashStop(reason, meta, holder)),
+            stopped: dict.insert(
+              state.stopped,
+              pid,
+              CrashStop(reason, meta, holder),
+            ),
           )
         }
       }
@@ -1738,7 +1779,9 @@ fn program_down(state: State, pid: Pid, reason: Dynamic) -> State {
         1, Ok(ctx) ->
           output(
             "stderr",
-            "The program crashed: " <> inspect.describe_crash(ctx, reason) <> "\n",
+            "The program crashed: "
+              <> inspect.describe_crash(ctx, reason)
+              <> "\n",
           )
         _, _ -> Nil
       }

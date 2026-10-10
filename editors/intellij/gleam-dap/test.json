@@ -1,0 +1,7 @@
+{
+  "type": "gleam",
+  "request": "launch",
+  "name": "Debug Gleam tests",
+  "projectDir": "${workspaceFolder}",
+  "target": "test"
+}

@@ -61,7 +61,10 @@ fn int_frames(
 ) -> Result(List(#(Int, String, String, Int, Int)), String)
 
 @external(erlang, "gleam_dap_int_ffi", "bindings")
-fn int_bindings(meta: Pid, level: Int) -> Result(List(#(String, Dynamic)), String)
+fn int_bindings(
+  meta: Pid,
+  level: Int,
+) -> Result(List(#(String, Dynamic)), String)
 
 pub type GleamError {
   GleamError(
@@ -117,7 +120,8 @@ pub fn frames(
           let #(level, frame_module, function, _arity, frame_line) = frame
           case i {
             0 -> FrameData(Some(meta), 0, module, function, line)
-            _ -> FrameData(Some(meta), level, frame_module, function, frame_line)
+            _ ->
+              FrameData(Some(meta), level, frame_module, function, frame_line)
           }
         }),
       )
@@ -202,7 +206,10 @@ fn frame_json(ctx: Context, id: Int, frame: FrameData) -> Json {
 
 pub fn source_json(path: String) -> Json {
   JObject([
-    #("name", JString(path |> string.split("/") |> list.last |> result.unwrap(path))),
+    #(
+      "name",
+      JString(path |> string.split("/") |> list.last |> result.unwrap(path)),
+    ),
     #("path", JString(path)),
   ])
 }
@@ -234,7 +241,9 @@ fn scope_json(name: String, reference: Int, expensive: Bool) -> Json {
   ])
 }
 
-pub fn frame_bindings(frame: FrameData) -> Result(List(#(String, Dynamic)), String) {
+pub fn frame_bindings(
+  frame: FrameData,
+) -> Result(List(#(String, Dynamic)), String) {
   case frame.meta {
     Some(meta) -> int_bindings(meta, frame.level)
     None -> Ok([])
@@ -251,9 +260,11 @@ pub fn variables_body(ctx: Context, reference: Int) -> Result(Json, String) {
           list.sort(bindings, fn(a, b) { string.compare(a.0, b.0) })
           |> list.filter(fn(b) { b.0 != "_" })
       }
-      Ok(variables_json(
-        list.map(shown, fn(b) { variable_json(ctx, pid, b.0, b.1, Some(b.0)) }),
-      ))
+      Ok(
+        variables_json(
+          list.map(shown, fn(b) { variable_json(ctx, pid, b.0, b.1, Some(b.0)) }),
+        ),
+      )
     }
     Ok(ValueRef(pid, term)) ->
       Ok(variables_json(
@@ -296,7 +307,10 @@ pub fn child_reference(pid: Pid, term: Dynamic) -> Int {
 // --- Evaluate ---------------------------------------------------------------
 
 @external(erlang, "gleam_dap_eval_ffi", "eval")
-fn eval(source: String, bindings: List(#(String, Dynamic))) -> Result(Dynamic, String)
+fn eval(
+  source: String,
+  bindings: List(#(String, Dynamic)),
+) -> Result(Dynamic, String)
 
 /// Evaluates an expression in a frame (or with no bindings if there is no
 /// frame).
@@ -396,7 +410,11 @@ pub fn completions_body(
   )
 }
 
-fn completion(label: String, kind: String, length: Int) -> #(String, String, Int) {
+fn completion(
+  label: String,
+  kind: String,
+  length: Int,
+) -> #(String, String, Int) {
   #(label, kind, length)
 }
 
@@ -426,10 +444,12 @@ fn resolve_module(ctx: Context, name: String) -> String {
       ctx.index.modules
       |> dict.keys
       |> list.find(fn(m) { string.ends_with(m, "@" <> module) })
-      |> result.unwrap(case dict.has_key(ctx.index.modules, "gleam@" <> module) {
-        True -> "gleam@" <> module
-        False -> module
-      })
+      |> result.unwrap(
+        case dict.has_key(ctx.index.modules, "gleam@" <> module) {
+          True -> "gleam@" <> module
+          False -> module
+        },
+      )
   }
 }
 

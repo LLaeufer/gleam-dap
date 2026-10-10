@@ -1,0 +1,4 @@
+build.sh
+node_modules/**
+*.vsix
+.gitignore

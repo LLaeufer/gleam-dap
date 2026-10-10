@@ -1,14 +1,14 @@
 //// End-to-end tests: a real adapter debugging the fixture project.
 
+import dap_client.{
+  breakpoints, finish, get, launch, request, scope_variables, source, thread_arg,
+  top, values, wait_event, wait_stop,
+}
 import gleam/dynamic
 import gleam/dynamic/decode
 import gleam/list
 import gleam/string
 import gleam_dap/json.{JArray, JBool, JInt, JObject, JString}
-import dap_client.{
-  breakpoints, finish, get, launch, request, scope_variables, source,
-  thread_arg, top, values, wait_event, wait_stop,
-}
 
 pub fn breakpoints_and_step_over_test() {
   let client = launch([])
@@ -17,7 +17,11 @@ pub fn breakpoints_and_step_over_test() {
       #("source", source("sample.gleam")),
       #("breakpoints", breakpoints([9])),
     ])
-  assert get(response, ["body", "breakpoints"], decode.list(decode.at(["verified"], decode.bool)))
+  assert get(
+      response,
+      ["body", "breakpoints"],
+      decode.list(decode.at(["verified"], decode.bool)),
+    )
     == [True]
   let _ = request(client, "configurationDone", [])
 
@@ -135,7 +139,11 @@ pub fn breakpoint_validation_test() {
       #("line", JInt(24)),
       #("endLine", JInt(28)),
     ])
-  assert get(response, ["body", "breakpoints"], decode.list(decode.at(["line"], decode.int)))
+  assert get(
+      response,
+      ["body", "breakpoints"],
+      decode.list(decode.at(["line"], decode.int)),
+    )
     == [26, 27]
   finish(client)
 }
@@ -220,7 +228,12 @@ pub fn processes_are_threads_test() {
   let #(thread, _, frames) = wait_stop(client)
   assert top(frames) == #("sample/flow.worker", 70)
   let response = request(client, "threads", [])
-  let ids = get(response, ["body", "threads"], decode.list(decode.at(["id"], decode.int)))
+  let ids =
+    get(
+      response,
+      ["body", "threads"],
+      decode.list(decode.at(["id"], decode.int)),
+    )
   assert list.contains(ids, thread)
   finish(client)
 }
@@ -276,7 +289,11 @@ pub fn function_breakpoints_test() {
         ]),
       ),
     ])
-  assert get(response, ["body", "breakpoints"], decode.list(decode.at(["verified"], decode.bool)))
+  assert get(
+      response,
+      ["body", "breakpoints"],
+      decode.list(decode.at(["verified"], decode.bool)),
+    )
     == [True, False]
   let _ = request(client, "configurationDone", [])
   let #(_, _, frames) = wait_stop(client)
@@ -326,7 +343,11 @@ pub fn evaluate_errors_test() {
       #("column", JInt(15)),
       #("frameId", JInt(frame.id)),
     ])
-  assert get(response, ["body", "targets"], decode.list(decode.at(["label"], decode.string)))
+  assert get(
+      response,
+      ["body", "targets"],
+      decode.list(decode.at(["label"], decode.string)),
+    )
     == ["classify"]
   finish(client)
 }
@@ -348,7 +369,8 @@ pub fn program_with_dependencies_test() {
           #(
             "path",
             JString(
-              dap_client.project_root() <> "/fixtures/with_deps/src/with_deps.gleam",
+              dap_client.project_root()
+              <> "/fixtures/with_deps/src/with_deps.gleam",
             ),
           ),
         ]),
@@ -357,10 +379,17 @@ pub fn program_with_dependencies_test() {
     ])
   let response =
     request(client, "setFunctionBreakpoints", [
-      #("breakpoints", JArray([JObject([#("name", JString("gleam/list.map"))])])),
+      #(
+        "breakpoints",
+        JArray([JObject([#("name", JString("gleam/list.map"))])]),
+      ),
     ])
   let verified =
-    get(response, ["body", "breakpoints"], decode.list(decode.at(["verified"], decode.bool)))
+    get(
+      response,
+      ["body", "breakpoints"],
+      decode.list(decode.at(["verified"], decode.bool)),
+    )
   // The packaged adapter renames its own gleam_stdlib, so the program's copy
   // can be interpreted. Run from the source tree the adapter shares it, and
   // it must refuse rather than deadlock.

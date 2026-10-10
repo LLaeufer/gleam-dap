@@ -97,7 +97,8 @@ fn dedupe_by_name(
     [], _ -> list.reverse(acc)
     [#(name, _, _), ..rest], [#(previous, _), ..] if name == previous ->
       dedupe_by_name(rest, acc)
-    [#(name, _, value), ..rest], _ -> dedupe_by_name(rest, [#(name, value), ..acc])
+    [#(name, _, value), ..rest], _ ->
+      dedupe_by_name(rest, [#(name, value), ..acc])
   }
 }
 

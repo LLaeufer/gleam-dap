@@ -88,10 +88,7 @@ pub fn event(name: String, body: Option(Json)) -> Json {
 pub fn send(message: Json) -> Nil {
   let message = case message {
     JObject(fields) ->
-      JObject([
-        #("seq", JInt(next_seq())),
-        ..remove_field(fields, "seq")
-      ])
+      JObject([#("seq", JInt(next_seq())), ..remove_field(fields, "seq")])
     other -> other
   }
   write(framing.encode(json.to_string(message)))
@@ -166,7 +163,9 @@ pub fn continued_event(thread_id: Int, all: Bool) -> Json {
 pub fn thread_event(reason: String, thread_id: Int) -> Json {
   event(
     "thread",
-    Some(JObject([#("reason", JString(reason)), #("threadId", JInt(thread_id))])),
+    Some(
+      JObject([#("reason", JString(reason)), #("threadId", JInt(thread_id))]),
+    ),
   )
 }
 

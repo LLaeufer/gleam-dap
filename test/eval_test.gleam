@@ -5,7 +5,10 @@ import gleam/option.{Some}
 fn d(x: a) -> Dynamic
 
 @external(erlang, "gleam_dap_eval_ffi", "eval")
-fn eval(source: String, bindings: List(#(String, Dynamic))) -> Result(Dynamic, String)
+fn eval(
+  source: String,
+  bindings: List(#(String, Dynamic)),
+) -> Result(Dynamic, String)
 
 @external(erlang, "gleam_dap_eval_ffi", "set_labels")
 fn set_labels(labels: List(#(#(String, Int), #(String, List(String))))) -> Nil

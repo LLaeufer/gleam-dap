@@ -21,7 +21,13 @@ pub fn demangle_test() {
 }
 
 pub fn latest_bindings_test() {
-  let bindings = [#("X", 1), #("X@1", 2), #("_pipe", 3), #("Name", 4), #("X@10", 5)]
+  let bindings = [
+    #("X", 1),
+    #("X@1", 2),
+    #("_pipe", 3),
+    #("Name", 4),
+    #("X@10", 5),
+  ]
   assert names.latest_bindings(bindings) == [#("name", 4), #("x", 5)]
 }
 

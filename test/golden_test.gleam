@@ -4,13 +4,13 @@
 ////
 //// Regenerate with `GLEAM_DAP_UPDATE_GOLDEN=1 gleam test`.
 
+import dap_client
 import gleam/dict
 import gleam/int
 import gleam/list
 import gleam/string
 import gleam_dap/launch
 import gleam_dap/project
-import dap_client
 
 @external(erlang, "test_ffi", "write_file")
 fn write_file(path: String, contents: String) -> Nil
@@ -50,9 +50,7 @@ pub fn breakable_lines_test() {
         })
       string.join(
         [
-          module.module
-            <> " "
-            <> string.replace(module.source, dir <> "/", ""),
+          module.module <> " " <> string.replace(module.source, dir <> "/", ""),
           ..functions
         ],
         "\n",

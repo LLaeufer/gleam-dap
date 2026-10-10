@@ -81,7 +81,11 @@ pub fn success(response: Dynamic) -> Bool {
   ok
 }
 
-pub fn get(value: Dynamic, path: List(String), decoder: decode.Decoder(a)) -> a {
+pub fn get(
+  value: Dynamic,
+  path: List(String),
+  decoder: decode.Decoder(a),
+) -> a {
   case decode.run(value, decode.at(path, decoder)) {
     Ok(result) -> result
     Error(errors) ->

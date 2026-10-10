@@ -84,8 +84,7 @@ pub fn limits_test() {
 
 pub fn children_test() {
   let children = value.children(d(Person("Ada", 36)), options())
-  assert children
-    == [value.Child("name", d("Ada")), value.Child("age", d(36))]
+  assert children == [value.Child("name", d("Ada")), value.Child("age", d(36))]
   assert value.children(d([10, 20]), options())
     == [value.Child("0", d(10)), value.Child("1", d(20))]
   assert value.children(d(Rectangle(1.0, 2.0)), options())
