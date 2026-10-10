@@ -8,6 +8,14 @@ A debugger for Gleam programs running on the Erlang VM, speaking the
 This is a personal tool for exploring Gleam more comfortably. It is not
 intended for upstreaming.
 
+**Status (10 October 2026):** steps 1 to 5 are implemented, including the
+advanced features, tests and CI. See the [README](README.md) for how to use
+it and [open-questions/](open-questions/) for the decisions taken along the
+way, including where the implementation differs from this plan (fixtures in
+`fixtures/` instead of `test/fixtures/`, no `gleam_json`, `gleam_otp` or
+`glance`, labels from record headers, a "Raw bindings" scope instead of a
+"shadowed" group).
+
 Detailed plans:
 
 - [docs/line-mapping.md](docs/line-mapping.md): how `.gleam` lines map to
@@ -318,5 +326,6 @@ in [docs/elixirls-features.md](docs/elixirls-features.md).
 - **OTP processes.** Code running inside actors and supervisors should work
   because `int` works per module, but needs testing.
 - **Package access.** The Hex package registry is not reachable from the
-  current cloud environment, which blocks fetching dependencies there. This
-  needs to be allowed before step 2 can be built and tested in the cloud.
+  current cloud environment. `scripts/offline-deps.sh` works around it by
+  fetching the dependencies from their GitHub repositories into
+  `build/packages`.
