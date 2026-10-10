@@ -1,0 +1,22 @@
+sample src/sample.gleam
+  println/1 lines 5-5: 5
+  main/0 lines 7-22: 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22
+  greet/1 lines 25-27: 26 27
+  crash_main/0 lines 30-34: 31 32 33 34
+  panic_main/0 lines 37-39: 38 39
+  loop_main/0 lines 42-43: 43
+  count_down/1 lines 46-49: 47 48 49
+sample@flow src/sample/flow.gleam
+  double/1 lines 6-7: 7
+  pipes/1 lines 10-13: 11 12 13
+  try/2 lines 16-19: 17 18 19
+  with_use/1 lines 23-26: 24 25 26 (fn on 24)
+  check/1 lines 29-32: 30 31 32
+  classify/1 lines 36-49: 37 38 39 40 42 43 44 47 48 49 (fn on 42)
+  map/2 lines 53-56: 54 55 56
+  spawn_worker/0 lines 60-62: 61 62 (fn on 61)
+  worker/1 lines 65-71: 66 67 68 70 71
+sample@shapes src/sample/shapes.gleam
+  birthday/1 lines 15-17: 16 17
+  area/1 lines 20-23: 21 22 23
+  describe/1 lines 27-35: 28 29 30 31 33 34 35

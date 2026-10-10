@@ -46,7 +46,8 @@ gleam_error(#{gleam_error := Kind} = Map) ->
           to_text(Get(module, <<>>)),
           to_text(Get(function, <<>>)),
           case Get(line, 0) of L when is_integer(L) -> L; _ -> 0 end,
-          to_text(Get(file, <<>>))}};
+          to_text(Get(file, <<>>)),
+          case maps:find(value, Map) of {ok, V} -> {some, V}; error -> none end}};
 gleam_error({Reason, Stack}) when is_list(Stack) -> gleam_error(Reason);
 gleam_error({{Reason, Stack}, _}) when is_list(Stack) -> gleam_error(Reason);
 gleam_error(_) -> {error, nil}.

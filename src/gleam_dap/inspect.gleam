@@ -71,7 +71,14 @@ pub type GleamError {
     function: String,
     line: Int,
     file: String,
+    /// The value that didn't match, for `let assert`.
+    value: Option(Dynamic),
   )
+}
+
+/// `let_assert` → `let assert`.
+pub fn error_kind_label(kind: String) -> String {
+  string.replace(kind, "_", " ")
 }
 
 @external(erlang, "gleam_dap_value_ffi", "gleam_error")
@@ -433,14 +440,14 @@ pub fn exception_info_body(ctx: Context, reason: Dynamic) -> Json {
     Ok(error) ->
       json.object([
         #("exceptionId", json.string(error.kind)),
-        #("description", json.string(error.message)),
+        #("description", json.string(describe_crash(ctx, reason))),
         #("breakMode", json.string("unhandled")),
         #(
           "details",
           Some(
             json.object([
               #("message", json.string(error.message)),
-              #("typeName", json.string("Gleam " <> error.kind)),
+              #("typeName", json.string(error_kind_label(error.kind))),
               #(
                 "stackTrace",
                 json.string(
@@ -471,7 +478,13 @@ pub fn exception_info_body(ctx: Context, reason: Dynamic) -> Json {
 /// A one-line description of a crash, for the stopped event and output.
 pub fn describe_crash(ctx: Context, reason: Dynamic) -> String {
   case gleam_error(reason) {
-    Ok(error) -> error.kind <> ": " <> error.message
+    Ok(error) -> {
+      let base = error_kind_label(error.kind) <> ": " <> error.message
+      case error.value {
+        Some(v) -> base <> " Value: " <> value.render(v, ctx.options)
+        None -> base
+      }
+    }
     Error(Nil) -> value.render(crash_reason(reason), ctx.options)
   }
 }
