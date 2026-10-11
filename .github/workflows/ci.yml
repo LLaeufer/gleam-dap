@@ -1,9 +1,9 @@
 name: CI
 
+# CI is off by default: it only runs when started by hand, from the
+# Actions tab ("Run workflow") or with `gh workflow run ci.yml --ref <branch>`.
 on:
-  push:
-    branches: [main]
-  pull_request:
+  workflow_dispatch:
 
 jobs:
   test:

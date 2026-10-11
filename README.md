@@ -278,7 +278,10 @@ GLEAM_DAP_COMMAND="$PWD/dist/gleam-dap/bin/gleam-dap" gleam test   # end-to-end 
 - `scripts/offline-deps.sh` fetches the dependencies from GitHub into
   `build/packages`, for sandboxes that can't reach Hex.
 - CI (`.github/workflows/ci.yml`) runs the tests on OTP 27 and 28, again
-  against the packaged adapter, and builds the VS Code extension.
+  against the packaged adapter, and builds the VS Code extension. **CI is
+  disabled by default**: pushes and pull requests don't start it. It runs
+  only on request, from the Actions tab ("CI" → "Run workflow", pick the
+  branch) or with `gh workflow run ci.yml --ref <branch>`.
 
 ### How it works
 
