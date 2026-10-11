@@ -66,6 +66,9 @@ pub fn wildcard(pattern: String) -> List(String)
 @external(erlang, "gleam_dap_ffi", "absname")
 pub fn absname(path: String) -> String
 
+@external(erlang, "gleam_dap_ffi", "is_absolute")
+fn is_absolute(path: String) -> Bool
+
 @external(erlang, "gleam_dap_value_ffi", "read_record_headers")
 fn read_record_headers(dir: String) -> List(#(String, String, List(String)))
 
@@ -120,10 +123,10 @@ pub fn build_index(project_dir: String, name: String) -> Index {
         use #(module, file, functions) <- result.try(
           analyse(beam) |> result.replace_error(Nil),
         )
-        let source = case file {
-          "" -> ""
-          "/" <> _ -> file
-          _ -> absname(root <> "/" <> file)
+        let source = case file, is_absolute(file) {
+          "", _ -> ""
+          _, True -> absname(file)
+          _, False -> absname(root <> "/" <> file)
         }
         Ok(ModuleInfo(module:, package:, source:, beam:, functions:))
       })

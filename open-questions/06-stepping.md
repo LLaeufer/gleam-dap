@@ -3,8 +3,9 @@
 **Already built:** step over and step out run on temporary breakpoints
 (`stepping.over_targets`/`out_targets` in `src/gleam_dap/stepping.gleam`,
 `start_targeted` in `src/gleam_dap/session.gleam`, and the condition check in
-`src/gleam_dap_eval_ffi.erl`). When attaching to a node, or with
-`stackTraceMode: "false"`, they fall back to `int`'s own `next` and `finish`
+`src/gleam_dap_eval_ffi.erl`), also when attached to a node (see
+[24-attach-conditions.md](24-attach-conditions.md)). With
+`stackTraceMode: "false"` they fall back to `int`'s own `next` and `finish`
 with the tail-call corrections described under option B. Step in is
 `int:step`.
 
@@ -61,9 +62,10 @@ removed.
   releases; the end-to-end tests would catch a change.
 - Each step adds and removes `int` breakpoints, a few dozen calls to the
   debugger's server.
-- Not available when attaching (conditions run on the other node, where the
-  adapter's tables don't exist) or without a call stack
-  (`stackTraceMode: "false"`).
+- Not available without a call stack (`stackTraceMode: "false"`). When
+  attached, the conditions run on the other node and call back to the
+  adapter, which costs a network round trip per line reached that has a
+  temporary breakpoint (see [24-attach-conditions.md](24-attach-conditions.md)).
 
 ### B. `int`'s `next`/`finish` with corrections (the first version, now the fallback)
 

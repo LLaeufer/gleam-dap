@@ -186,7 +186,10 @@ fn run_command(
 ) -> Result(#(Int, String), String)
 
 fn gleam_executable(config: Config) -> Result(String, String) {
-  case string.contains(config.gleam_path, "/") {
+  case
+    string.contains(config.gleam_path, "/")
+    || string.contains(config.gleam_path, "\\")
+  {
     True -> Ok(config.gleam_path)
     False ->
       find_executable(config.gleam_path)

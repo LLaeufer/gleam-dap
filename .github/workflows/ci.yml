@@ -34,6 +34,35 @@ jobs:
           name: adapter-log-otp-${{ matrix.otp }}
           path: build/gleam-dap-test.log
 
+  windows:
+    name: Test on Windows (OTP ${{ matrix.otp }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        otp: ["27", "28"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: ${{ matrix.otp }}
+          gleam-version: "1.19.0"
+      - name: Unit and end-to-end tests
+        run: gleam test
+      - name: Package the adapter
+        run: escript scripts/package.escript
+      - name: End-to-end tests against the packaged adapter
+        shell: pwsh
+        run: |
+          $env:GLEAM_DAP_COMMAND = "$PWD\dist\gleam-dap\bin\gleam-dap.cmd"
+          gleam test
+      - name: Upload the adapter log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: adapter-log-windows-otp-${{ matrix.otp }}
+          path: build/gleam-dap-test.log
+
   vscode:
     name: VS Code extension
     runs-on: ubuntu-24.04

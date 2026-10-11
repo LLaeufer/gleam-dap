@@ -24,10 +24,10 @@ types Gleam has no literal syntax for, and how big a rendered value may get
 | Pid, reference, port | `//erl(<0.83.0>)`, `//erl(#Ref<...>)`, `//erl(#Port<...>)` |
 | Float | Gleam's float format (`2.0`, `1.0e-10`) |
 
-Values are cut after 1,000 characters and collections after 100 items,
-both in the one-line view and when a value is expanded in the variables
-view. Items beyond the first 100 of a long list can only be reached through
-the debug console (for example `list.drop(xs, 100)`).
+Values are cut after 1,000 characters and collections after 100 items in
+the one-line view. Expanding a list, map or tuple with more than 100 items
+pages it (see [21-paging.md](21-paging.md); before PR #5 expanding showed
+only the first 100).
 
 ## Options
 
@@ -46,9 +46,7 @@ the debug console (for example `list.drop(xs, 100)`).
 ### Limits: 1,000 characters and 100 items (chosen) vs. no limits vs. smaller
 
 - Keeps the variables view responsive with huge values.
-- Items past the 100th aren't shown when expanding. DAP's paged variables
-  (`indexedVariables` with `start`/`count`) would fix that and are the
-  natural next step.
+- Items past the 100th are paged when expanding (built in PR #5).
 - Smaller limits truncate ordinary records; no limits can freeze the editor
   on a large list.
 

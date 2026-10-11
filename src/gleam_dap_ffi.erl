@@ -16,7 +16,7 @@
     log_open/1, log/1,
     otp_release/0, halt/1, set_cwd/1, get_cwd/0, put_env/2,
     send_after/2, unique_name/0,
-    read_file/1, list_dir/1, wildcard/1, absname/1, run_with_timeout/2
+    read_file/1, list_dir/1, wildcard/1, absname/1, is_absolute/1, run_with_timeout/2
 ]).
 
 %% ---------------------------------------------------------------------------
@@ -426,11 +426,21 @@ list_dir(Path) ->
 wildcard(Pattern) ->
     [unicode:characters_to_binary(P) || P <- lists:sort(filelib:wildcard(binary_to_list(Pattern)))].
 
+%% Absolute, with `.` and `..` resolved and, on Windows, forward slashes and
+%% a lowercase drive letter, so paths from the editor and from the compiler
+%% compare equal.
 absname(Path) ->
     unicode:characters_to_binary(normalise(filename:absname(Path))).
 
+is_absolute(Path) ->
+    filename:pathtype(Path) =:= absolute.
+
 normalise(Path) ->
-    [Root | Parts] = filename:split(Path),
+    [Root0 | Parts] = filename:split(Path),
+    Root = case Root0 of
+        [Drive, $: | RootRest] when Drive >= $A, Drive =< $Z -> [Drive + 32, $: | RootRest];
+        _ -> Root0
+    end,
     filename:join([Root | lists:reverse(lists:foldl(
         fun(".", Acc) -> Acc;
            ("..", [_ | Acc]) -> Acc;
