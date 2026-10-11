@@ -1,0 +1,8 @@
+# Fixture project with a dependency, for checking that the adapter's own
+# copy of gleam_stdlib and the program's copy don't get in each other's way.
+name = "with_deps"
+version = "1.0.0"
+target = "erlang"
+
+[dependencies]
+gleam_stdlib = ">= 1.0.0 and < 2.0.0"

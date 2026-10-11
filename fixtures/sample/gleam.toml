@@ -1,0 +1,8 @@
+# Fixture project for gleam-dap's tests. It has no Hex dependencies on
+# purpose, so it builds without network access.
+name = "sample"
+version = "1.0.0"
+target = "erlang"
+
+[dependencies]
+gleam_dap_debug = { path = "../../packages/gleam_dap_debug" }

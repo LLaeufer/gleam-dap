@@ -1,0 +1,14 @@
+# Do not manually edit this file, it is managed by Gleam.
+#
+# This file locks the dependency versions used, to make your build
+# deterministic and to prevent unexpected versions from being included
+# in your application.
+#
+# You should check this file into your source control repository.
+
+packages = [
+  { name = "gleam_dap_debug", version = "0.1.0", build_tools = ["gleam"], requirements = [], source = "local", path = "../../packages/gleam_dap_debug" },
+]
+
+[requirements]
+gleam_dap_debug = { path = "../../packages/gleam_dap_debug" }

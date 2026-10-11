@@ -1,0 +1,8 @@
+{
+  "type": "gleam",
+  "request": "attach",
+  "name": "Attach to Gleam node",
+  "projectDir": "${workspaceFolder}",
+  "node": "app@localhost",
+  "build": false
+}

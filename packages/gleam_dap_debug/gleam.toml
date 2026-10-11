@@ -1,0 +1,7 @@
+name = "gleam_dap_debug"
+version = "0.1.0"
+description = "Stop in the gleam-dap debugger from code"
+licences = ["Apache-2.0"]
+target = "erlang"
+
+[dependencies]

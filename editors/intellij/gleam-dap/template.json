@@ -1,0 +1,18 @@
+{
+  "id": "gleam-dap",
+  "name": "Gleam (gleam-dap)",
+  "launch": {
+    "default": "/path/to/gleam-dap/dist/gleam-dap/bin/gleam-dap"
+  },
+  "fileTypeMappings": [
+    {
+      "fileType": {
+        "name": "Gleam",
+        "patterns": [
+          "*.gleam"
+        ]
+      },
+      "languageId": "gleam"
+    }
+  ]
+}

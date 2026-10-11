@@ -1,0 +1,240 @@
+{
+  "name": "gleam-dap",
+  "displayName": "Gleam Debugger (gleam-dap)",
+  "description": "Debug Gleam programs on the Erlang VM: breakpoints, stepping and Gleam-looking variables.",
+  "version": "0.1.0",
+  "publisher": "local",
+  "license": "Apache-2.0",
+  "private": true,
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Debuggers"
+  ],
+  "main": "./extension.js",
+  "activationEvents": [
+    "onDebugResolve:gleam",
+    "onDebugDynamicConfigurations:gleam",
+    "onLanguage:gleam"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "gleam",
+        "aliases": [
+          "Gleam"
+        ],
+        "extensions": [
+          ".gleam"
+        ]
+      }
+    ],
+    "breakpoints": [
+      {
+        "language": "gleam"
+      },
+      {
+        "language": "erlang"
+      }
+    ],
+    "configuration": {
+      "title": "Gleam Debugger",
+      "properties": {
+        "gleamDap.adapterPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the gleam-dap launcher (bin/gleam-dap). Leave empty to use the adapter bundled with the extension."
+        },
+        "gleamDap.logFile": {
+          "type": "string",
+          "default": "",
+          "description": "Write the adapter's internal log to this file. For troubleshooting."
+        }
+      }
+    },
+    "debuggers": [
+      {
+        "type": "gleam",
+        "label": "Gleam",
+        "languages": [
+          "gleam"
+        ],
+        "configurationAttributes": {
+          "launch": {
+            "properties": {
+              "projectDir": {
+                "type": "string",
+                "description": "The Gleam project to debug (the folder with gleam.toml).",
+                "default": "${workspaceFolder}"
+              },
+              "module": {
+                "type": "string",
+                "description": "Gleam module with the entry function, such as `app/cli`. Defaults to the project's main module."
+              },
+              "function": {
+                "type": "string",
+                "description": "Entry function, called with no arguments.",
+                "default": "main"
+              },
+              "target": {
+                "type": "string",
+                "enum": [
+                  "dev",
+                  "test"
+                ],
+                "description": "`dev` runs the entry function; `test` runs the project's tests with EUnit.",
+                "default": "dev"
+              },
+              "env": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "description": "Environment variables set before the program starts.",
+                "default": {}
+              },
+              "stopOnEntry": {
+                "type": "boolean",
+                "description": "Stop at the first line of the entry function.",
+                "default": false
+              },
+              "interpretDependencies": {
+                "type": "boolean",
+                "description": "Also debug dependencies. Slow: interpreted code runs much slower.",
+                "default": false
+              },
+              "interpretModules": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Extra modules to debug, as globs over Gleam module names: `gleam/list`, `my_dep/*`, `my_dep/**`.",
+                "default": []
+              },
+              "excludeModules": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Modules never to debug, as globs over Gleam module names.",
+                "default": []
+              },
+              "stackTraceMode": {
+                "type": "string",
+                "enum": [
+                  "all",
+                  "no_tail",
+                  "false"
+                ],
+                "description": "Which calls the interpreter keeps on the stack. `all` keeps tail calls too, which helps in Gleam but uses memory in long loops.",
+                "default": "all"
+              },
+              "gleamPath": {
+                "type": "string",
+                "description": "The gleam executable used to build the project.",
+                "default": "gleam"
+              },
+              "build": {
+                "type": "boolean",
+                "description": "Run `gleam build` before debugging.",
+                "default": true
+              }
+            }
+          },
+          "attach": {
+            "required": [
+              "node"
+            ],
+            "properties": {
+              "projectDir": {
+                "type": "string",
+                "description": "The Gleam project the node runs.",
+                "default": "${workspaceFolder}"
+              },
+              "node": {
+                "type": "string",
+                "description": "The node to attach to, such as `app@localhost`."
+              },
+              "cookie": {
+                "type": "string",
+                "description": "The node's cookie. Defaults to ~/.erlang.cookie."
+              },
+              "interpretDependencies": {
+                "type": "boolean",
+                "default": false
+              },
+              "interpretModules": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "default": []
+              },
+              "excludeModules": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "default": []
+              },
+              "build": {
+                "type": "boolean",
+                "default": false
+              }
+            }
+          }
+        },
+        "initialConfigurations": [
+          {
+            "type": "gleam",
+            "request": "launch",
+            "name": "Debug Gleam project",
+            "projectDir": "${workspaceFolder}"
+          }
+        ],
+        "configurationSnippets": [
+          {
+            "label": "Gleam: Launch",
+            "description": "Debug the project's main function",
+            "body": {
+              "type": "gleam",
+              "request": "launch",
+              "name": "Debug Gleam project",
+              "projectDir": "^\"\\${workspaceFolder}\""
+            }
+          },
+          {
+            "label": "Gleam: Tests",
+            "description": "Debug the project's tests",
+            "body": {
+              "type": "gleam",
+              "request": "launch",
+              "name": "Debug Gleam tests",
+              "projectDir": "^\"\\${workspaceFolder}\"",
+              "target": "test"
+            }
+          },
+          {
+            "label": "Gleam: Attach",
+            "description": "Attach to a running node",
+            "body": {
+              "type": "gleam",
+              "request": "attach",
+              "name": "Attach to Gleam node",
+              "projectDir": "^\"\\${workspaceFolder}\"",
+              "node": "app@localhost",
+              "build": false
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "scripts": {
+    "package": "sh ./build.sh"
+  },
+  "devDependencies": {
+    "@vscode/vsce": "3.2.2"
+  }
+}
