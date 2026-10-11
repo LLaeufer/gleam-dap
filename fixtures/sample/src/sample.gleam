@@ -83,3 +83,12 @@ fn build(n: Int, acc: List(Int)) -> List(Int) {
     False -> build(n - 1, [n, ..acc])
   }
 }
+
+/// Prints the program's command-line arguments.
+pub fn args_main() -> Nil {
+  let args = arguments()
+  println(args)
+}
+
+@external(erlang, "sample_ffi", "arguments")
+fn arguments() -> String

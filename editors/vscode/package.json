@@ -86,6 +86,14 @@
                 "description": "`dev` runs the entry function; `test` runs the project's tests with EUnit.",
                 "default": "dev"
               },
+              "args": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Command-line arguments for the program, as `argv.load()` and `init:get_plain_arguments()` read them.",
+                "default": []
+              },
               "env": {
                 "type": "object",
                 "additionalProperties": {

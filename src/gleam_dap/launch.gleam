@@ -18,6 +18,8 @@ pub type Config {
     /// Gleam module name of the entry point, e.g. `app/cli`.
     module: String,
     function: String,
+    /// Command-line arguments for the program.
+    args: List(String),
     env: List(#(String, String)),
     target: Target,
     interpret_dependencies: Bool,
@@ -51,6 +53,7 @@ pub fn decode_config(
     )
     use module <- decode.optional_field("module", "", decode.string)
     use function <- decode.optional_field("function", "main", decode.string)
+    use args <- decode.optional_field("args", [], decode.list(decode.string))
     use env <- decode.optional_field(
       "env",
       [],
@@ -100,6 +103,7 @@ pub fn decode_config(
       project_dir:,
       module:,
       function:,
+      args:,
       env:,
       target: case target {
         "test" -> Test

@@ -126,6 +126,11 @@ pub type State {
     program: Option(Pid),
     program_state: ProgramState,
     workers: Dict(Int, Pid),
+    /// The `initialize` request as it came, for a child adapter.
+    initialize_body: Option(BitArray),
+    /// When the program has arguments, the child adapter that runs it; this
+    /// one only relays messages to it.
+    relay: Option(Pid),
   )
 }
 
@@ -192,6 +197,8 @@ pub fn new_state(subject: Subject(Message)) -> State {
     program: None,
     program_state: NotStarted,
     workers: dict.new(),
+    initialize_body: None,
+    relay: None,
   )
 }
 
@@ -208,11 +215,28 @@ fn loop(state: State) -> Nil {
 
 pub fn handle_message(state: State, message: Message) -> State {
   case message {
+    Incoming(body) if state.relay != None -> {
+      let assert Some(relay) = state.relay
+      relay_forward(relay, body)
+      state
+    }
     Incoming(body) ->
       case json.parse(body) |> result.try(protocol.decode_request) {
         Ok(request) -> {
           log.info("<- " <> request.command)
-          handle_request(state, request)
+          case request.command, state.initialized {
+            "initialize", _ ->
+              handle_request(
+                State(..state, initialize_body: Some(body)),
+                request,
+              )
+            "launch", True ->
+              case program_args(request) {
+                [_, ..] as args -> start_relay(state, args, body)
+                [] -> handle_request(state, request)
+              }
+            _, _ -> handle_request(state, request)
+          }
         }
         Error(Nil) -> {
           log.info("ignoring message that is not a request")
@@ -229,6 +253,52 @@ pub fn handle_message(state: State, message: Message) -> State {
     FinishProgram -> finish_program(state)
     WorkerDone(seq) -> State(..state, workers: dict.delete(state.workers, seq))
     Halt -> state
+  }
+}
+
+// --- Program arguments ------------------------------------------------------
+
+@external(erlang, "gleam_dap_relay_ffi", "is_child")
+fn is_child() -> Bool
+
+@external(erlang, "gleam_dap_relay_ffi", "start")
+fn relay_start(
+  args: List(String),
+  initialize: BitArray,
+  launch: BitArray,
+  on_exit: fn(Int) -> Nil,
+) -> Pid
+
+@external(erlang, "gleam_dap_relay_ffi", "forward")
+fn relay_forward(relay: Pid, body: BitArray) -> Nil
+
+/// The program's arguments, when this adapter has to start a child adapter
+/// for them: they can only be given to a VM when it starts (see
+/// `gleam_dap_relay_ffi`).
+fn program_args(request: Request) -> List(String) {
+  case is_child(), launch.decode_config(request.arguments, "") {
+    False, Ok(config) if config.node == "" -> config.args
+    _, _ -> []
+  }
+}
+
+fn start_relay(
+  state: State,
+  args: List(String),
+  launch_body: BitArray,
+) -> State {
+  let subject = state.subject
+  case state.initialize_body {
+    Some(initialize) -> {
+      log.info("starting a child adapter for the program's arguments")
+      let relay =
+        relay_start(args, initialize, launch_body, fn(status) {
+          log.info("child adapter exited with " <> int.to_string(status))
+          process.send(subject, Halt)
+        })
+      State(..state, relay: Some(relay))
+    }
+    None -> state
   }
 }
 

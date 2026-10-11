@@ -291,6 +291,29 @@ pub fn large_values_are_paged_test() {
   finish(client)
 }
 
+pub fn program_arguments_test() {
+  let client =
+    launch([
+      #("function", JString("args_main")),
+      #("args", JArray([JString("one"), JString("two words")])),
+    ])
+  let _ =
+    request(client, "setBreakpoints", [
+      #("source", source("sample.gleam")),
+      #("breakpoints", breakpoints([90])),
+    ])
+  let _ = request(client, "configurationDone", [])
+  let #(thread, reason, frames) = wait_stop(client)
+  assert reason == "breakpoint"
+  let assert [frame, ..] = frames
+  assert values(scope_variables(client, frame.id, "Locals"))
+    == [#("args", "\"one|two words\"")]
+  let _ = request(client, "continue", thread_arg(thread))
+  assert wait_until_output(client, "one") == "one|two words\n"
+  let _ = wait_event(client, "terminated")
+  finish(client)
+}
+
 pub fn stop_on_gleam_error_test() {
   let client = launch([#("function", JString("crash_main"))])
   let _ =
