@@ -12,7 +12,7 @@ why, and what to change to go another way.
 | [03-custom-type-labels.md](03-custom-type-labels.md) | Where do constructor and field names come from? | The `.hrl` record headers Gleam generates |
 | [04-shadowed-variables.md](04-shadowed-variables.md) | How to show shadowed variables and compiler temporaries? | Latest binding in "Locals", everything in "Raw bindings" |
 | [05-debug-console-language.md](05-debug-console-language.md) | What language does the debug console speak? | Erlang with a Gleam layer |
-| [06-stepping.md](06-stepping.md) | What exactly do step over and step out do in Gleam code? | Tail-call-aware step over, single-stepping over `use` |
+| [06-stepping.md](06-stepping.md) | What exactly do step over and step out do in Gleam code? | Temporary breakpoints plus continue, so breakpoints inside calls stop |
 | [07-stack-trace-mode.md](07-stack-trace-mode.md) | Which stack trace mode by default? | `all` |
 | [08-exception-breakpoints.md](08-exception-breakpoints.md) | When to stop on crashes? | Gleam errors by default, all crashes opt-in |
 | [09-packaging.md](09-packaging.md) | How to keep the adapter's stdlib apart from the program's? | Rename the adapter's dependencies when packaging |

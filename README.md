@@ -10,7 +10,8 @@ so it works in VS Code and in IntelliJ through
 - Breakpoints on `.gleam` lines, including conditions, hit counts and
   logpoints, and function breakpoints such as `app/user.greet/1`.
 - Continue, step over, step into, step out and pause, with step over
-  corrected for Gleam's tail calls.
+  corrected for Gleam's tail calls and `use`, and stopping at breakpoints
+  inside the calls it steps over.
 - Every stopped BEAM process is a thread, with a stack trace in `.gleam`
   lines and Gleam function names.
 - Variables with their Gleam names (`x`, not `X@1`) and Gleam-looking values:
@@ -238,9 +239,9 @@ crashes** also stops on Erlang errors such as `badarg`.
 
 - Interpreted code runs much slower than compiled code. Only the project's
   own modules are interpreted by default.
-- A breakpoint inside a function that you step over doesn't stop: Erlang's
-  interpreter doesn't check breakpoints during a step over or step out.
-  Continue (F5) to reach it instead.
+- When attaching to a node, or with `stackTraceMode: "false"`, step over and
+  step out use the interpreter's own commands, which run through breakpoints
+  inside the calls they step over. Continue (F5) to reach those instead.
 - Step out lands on the caller's next statement, not on the call that
   returned, because the interpreter only stops at statements.
 - With `stackTraceMode: "all"`, long-running loops keep every tail call on

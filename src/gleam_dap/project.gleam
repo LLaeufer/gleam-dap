@@ -21,6 +21,9 @@ pub type FunctionInfo {
     /// Statement lines that define an anonymous function, such as the
     /// callback of a `use`.
     lines_with_fun: List(Int),
+    /// Statement lines inside the body of an anonymous function, with how
+    /// many anonymous functions they are nested in.
+    fun_body_lines: List(#(Int, Int)),
   )
 }
 

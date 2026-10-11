@@ -113,6 +113,67 @@ pub fn step_in_and_out_test() {
   finish(client)
 }
 
+pub fn step_over_stops_at_breakpoints_inside_test() {
+  step_over_stops_at_breakpoints_inside([])
+}
+
+pub fn step_over_stops_at_breakpoints_inside_without_tail_frames_test() {
+  step_over_stops_at_breakpoints_inside([
+    #("stackTraceMode", JString("no_tail")),
+  ])
+}
+
+fn step_over_stops_at_breakpoints_inside(options) {
+  let client = launch(options)
+  let _ =
+    request(client, "setBreakpoints", [
+      #("source", source("sample.gleam")),
+      #("breakpoints", breakpoints([10, 27])),
+    ])
+  let _ = request(client, "configurationDone", [])
+  let #(thread, _, frames) = wait_stop(client)
+  assert top(frames) == #("sample.main", 10)
+  // Stepping over `greet("Ada")` stops at the breakpoint inside it.
+  let _ = request(client, "next", thread_arg(thread))
+  let #(_, reason, frames) = wait_stop(client)
+  assert reason == "breakpoint"
+  assert top(frames) == #("sample.greet", 27)
+  // Stepping over the last line of `greet` returns to the caller.
+  let _ = request(client, "next", thread_arg(thread))
+  let #(_, reason, frames) = wait_stop(client)
+  assert reason == "step"
+  assert top(frames) == #("sample.main", 11)
+  finish(client)
+}
+
+pub fn step_out_stops_at_breakpoints_on_the_way_test() {
+  let client = launch([])
+  let _ =
+    request(client, "setBreakpoints", [
+      #("source", source("sample/flow.gleam")),
+      #("breakpoints", breakpoints([7, 11])),
+    ])
+  let _ = request(client, "configurationDone", [])
+  let #(thread, _, frames) = wait_stop(client)
+  assert top(frames) == #("sample/flow.pipes", 11)
+  // The rest of `pipes` calls `double`, which has a breakpoint.
+  let _ = request(client, "stepOut", thread_arg(thread))
+  let #(_, reason, frames) = wait_stop(client)
+  assert reason == "breakpoint"
+  assert top(frames) == #("sample/flow.double", 7)
+  // Without breakpoints in the way, step out returns to the caller.
+  let _ =
+    request(client, "setBreakpoints", [
+      #("source", source("sample/flow.gleam")),
+      #("breakpoints", breakpoints([])),
+    ])
+  let _ = request(client, "stepOut", thread_arg(thread))
+  let #(_, reason, frames) = wait_stop(client)
+  assert reason == "step"
+  assert top(frames) == #("sample/flow.pipes", 13)
+  finish(client)
+}
+
 pub fn breakpoint_validation_test() {
   let client = launch([])
   let response =

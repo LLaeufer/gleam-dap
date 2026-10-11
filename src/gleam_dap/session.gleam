@@ -62,6 +62,8 @@ pub type StopInfo {
 pub type Stepping {
   SimpleStep
   Over(stepping.StepOver)
+  /// A step over or step out running on temporary breakpoints.
+  Targeted
   /// Running on from `debug.break()` to the caller's next line.
   DebugBreak
 }
@@ -100,8 +102,17 @@ pub type State {
     stdout: Option(Pid),
     line_breakpoints: Dict(String, List(LineBreakpoint)),
     function_breakpoints: List(FunctionBreakpoint),
-    /// Breakpoints currently set in `int`.
+    /// Lines with a breakpoint of the user's.
     int_breaks: Set(#(String, Int)),
+    /// Breakpoints currently set in `int`, with their condition slot if they
+    /// have one. Includes the temporary breakpoints of steps in progress.
+    installed: Dict(#(String, Int), Option(Int)),
+    /// The condition slot of each line that ever needed one, kept stable so
+    /// hit counts survive.
+    slots: Dict(#(String, Int), Int),
+    next_slot: Int,
+    /// Temporary breakpoints of the steps in progress.
+    step_targets: Dict(Pid, List(stepping.Target)),
     /// Temporary breakpoint for `stopOnEntry`.
     entry_break: Option(#(String, Int)),
     /// The breakpoint behind `debug.break()`, when the project uses it.
@@ -166,6 +177,10 @@ pub fn new_state(subject: Subject(Message)) -> State {
     line_breakpoints: dict.new(),
     function_breakpoints: [],
     int_breaks: set.new(),
+    installed: dict.new(),
+    slots: dict.new(),
+    next_slot: 1,
+    step_targets: dict.new(),
     entry_break: None,
     debug_break: None,
     next_breakpoint_id: 1,
@@ -592,9 +607,22 @@ fn int_set_condition(module: String, line: Int, check: #(String, String)) -> Nil
 
 @external(erlang, "gleam_dap_eval_ffi", "set_conditions")
 fn set_conditions(
-  conditions: List(#(Int, Dynamic, Dynamic, Dynamic)),
+  slots: List(#(Int, String, Int, SlotUser)),
   callbacks: #(fn(String) -> Nil, fn(String) -> Nil),
 ) -> Nil
+
+/// The user's breakpoint behind a condition slot.
+type SlotUser {
+  NoUser
+  Plain
+  Conditional(condition: Dynamic, hit: Dynamic, log: Dynamic)
+}
+
+@external(erlang, "gleam_dap_eval_ffi", "set_step_targets")
+fn set_step_targets(targets: List(#(Pid, String, Int, Int, Bool))) -> Nil
+
+@external(erlang, "gleam_dap_eval_ffi", "take_step_stop")
+fn take_step_stop(pid: Pid) -> Bool
 
 type SourceBreakpoint {
   SourceBreakpoint(
@@ -924,44 +952,140 @@ fn sync_breaks(state: State) -> State {
         Error(Nil) -> dict.insert(acc, key, b)
       }
     })
-  set.each(state.int_breaks, fn(key) { int_delete_break(key.0, key.1) })
-  let #(conditions, _) =
-    desired
-    |> dict.values
-    |> list.map_fold(1, fn(slot, b) {
-      int_set_break(b.module, b.line)
-      case b.condition, b.hit_condition, b.log_message {
-        None, None, None -> #(slot, None)
-        _, _, _ -> {
-          int_set_condition(b.module, b.line, #(
-            "gleam_dap_conditions",
-            "check_" <> int.to_string(slot),
-          ))
-          #(slot + 1, Some(#(slot, b)))
+  let targets = state.step_targets |> dict.values |> list.flatten
+  let target_keys =
+    targets |> list.map(fn(t) { #(t.module, t.line) }) |> set.from_list
+  let keys = set.union(set.from_list(dict.keys(desired)), target_keys)
+  // Which lines need a condition slot, and for whom.
+  let #(state, slotted) =
+    keys
+    |> set.to_list
+    |> list.fold(#(state, []), fn(acc, key) {
+      let #(state, slotted) = acc
+      let user = case dict.get(desired, key) {
+        Error(Nil) -> NoUser
+        Ok(b) ->
+          case is_plain(b) {
+            True -> Plain
+            False ->
+              Conditional(
+                or_none(b.condition),
+                or_none(b.hit_condition),
+                or_none(b.log_message),
+              )
+          }
+      }
+      case user, set.contains(target_keys, key) {
+        Plain, False -> #(state, slotted)
+        _, _ -> {
+          let #(state, slot) = slot_for(state, key)
+          #(state, [#(slot, key.0, key.1, user), ..slotted])
         }
       }
     })
-    |> fn(pair) { #(option.values(pair.1), pair.0) }
-  set_conditions(
-    list.map(conditions, fn(c) {
-      let #(slot, b) = c
-      #(
-        slot,
-        or_none(b.condition),
-        or_none(b.hit_condition),
-        or_none(b.log_message),
-      )
+  // Conditions first, so a new breakpoint never fires without its condition.
+  set_step_targets(
+    list.flat_map(dict.to_list(state.step_targets), fn(entry) {
+      list.map(entry.1, fn(t: stepping.Target) {
+        #(entry.0, t.module, t.line, t.max_level, t.any_level)
+      })
     }),
+  )
+  set_conditions(
+    slotted,
     #(fn(text) { output("console", text <> "\n") }, fn(text) {
       output("stderr", text <> "\n")
     }),
   )
+  let wanted =
+    keys
+    |> set.to_list
+    |> list.map(fn(key) {
+      #(
+        key,
+        list.find(slotted, fn(s) { #(s.1, s.2) == key })
+          |> result.map(fn(s) { s.0 })
+          |> option.from_result,
+      )
+    })
+    |> dict.from_list
+  // Only touch what changed, so that breakpoints other processes are about
+  // to hit stay in place.
+  dict.each(state.installed, fn(key, _) {
+    case dict.has_key(wanted, key) {
+      True -> Nil
+      False -> int_delete_break(key.0, key.1)
+    }
+  })
+  dict.each(wanted, fn(key, slot) {
+    case dict.get(state.installed, key), slot {
+      Ok(None), None -> Nil
+      Ok(Some(old)), Some(new) if old == new -> Nil
+      Ok(Some(_)), None -> {
+        // `int` can't drop a condition: replace the breakpoint.
+        int_delete_break(key.0, key.1)
+        int_set_break(key.0, key.1)
+      }
+      Ok(_), Some(slot) -> int_set_condition(key.0, key.1, check_for(slot))
+      Error(Nil), None -> int_set_break(key.0, key.1)
+      Error(Nil), Some(slot) -> {
+        int_set_break(key.0, key.1)
+        int_set_condition(key.0, key.1, check_for(slot))
+      }
+    }
+  })
   // The stopOnEntry breakpoint survives until it is hit.
   case state.entry_break {
     Some(#(module, line)) -> int_set_break(module, line)
     None -> Nil
   }
-  State(..state, int_breaks: desired |> dict.keys |> set.from_list)
+  State(
+    ..state,
+    int_breaks: desired |> dict.keys |> set.from_list,
+    installed: wanted,
+  )
+}
+
+fn slot_for(state: State, key: #(String, Int)) -> #(State, Int) {
+  case dict.get(state.slots, key) {
+    Ok(slot) -> #(state, slot)
+    Error(Nil) -> #(
+      State(
+        ..state,
+        slots: dict.insert(state.slots, key, state.next_slot),
+        next_slot: state.next_slot + 1,
+      ),
+      state.next_slot,
+    )
+  }
+}
+
+fn check_for(slot: Int) -> #(String, String) {
+  #("gleam_dap_conditions", "check_" <> int.to_string(slot))
+}
+
+fn has_plain_breakpoint(state: State, module: String, line: Int) -> Bool {
+  let lines =
+    state.line_breakpoints
+    |> dict.values
+    |> list.flatten
+    |> list.any(fn(b) {
+      b.module == module
+      && b.resolved == project.Resolved(line)
+      && b.condition == None
+      && b.hit_condition == None
+      && b.log_message == None
+    })
+  let functions =
+    list.any(state.function_breakpoints, fn(b) {
+      b.condition == None
+      && b.hit_condition == None
+      && case b.location {
+        Ok(#(m, lines)) -> m.module == module && list.contains(lines, line)
+        Error(_) -> False
+      }
+    })
+  lines || functions
 }
 
 fn is_plain(b: DesiredBreak) -> Bool {
@@ -1324,13 +1448,7 @@ fn step_request(state: State, request: Request, kind: String) -> State {
                 stepping: dict.insert(state.stepping, pid, SimpleStep),
               )
             }
-            "stepOut" -> {
-              int_finish(pid)
-              State(
-                ..state,
-                stepping: dict.insert(state.stepping, pid, SimpleStep),
-              )
-            }
+            "stepOut" -> start_step_out(state, pid, module, line)
             _ -> start_step_over(state, pid, module, line)
           }
         }
@@ -1360,6 +1478,123 @@ fn current_frame(
 }
 
 fn start_step_over(state: State, pid: Pid, module: String, line: Int) -> State {
+  case targeted_steps(state), step_frames(state, pid, module, line) {
+    True, Ok(frames) ->
+      case stepping.over_targets(frames, function_lookup(state)) {
+        Ok(targets) -> start_targeted(state, pid, targets)
+        Error(Nil) -> start_int_step_over(state, pid, module, line)
+      }
+    _, _ -> start_int_step_over(state, pid, module, line)
+  }
+}
+
+fn start_step_out(state: State, pid: Pid, module: String, line: Int) -> State {
+  case targeted_steps(state), step_frames(state, pid, module, line) {
+    True, Ok(frames) ->
+      start_targeted(
+        state,
+        pid,
+        stepping.out_targets(frames, function_lookup(state)),
+      )
+    _, _ -> {
+      int_finish(pid)
+      State(..state, stepping: dict.insert(state.stepping, pid, SimpleStep))
+    }
+  }
+}
+
+/// Steps run on temporary breakpoints when the interpreter keeps a call
+/// stack (their conditions need the call level) and the program runs in
+/// the adapter's own VM (their conditions run where the program runs).
+fn targeted_steps(state: State) -> Bool {
+  case state.mode, state.config {
+    Launch, Some(config) -> config.stack_trace_mode != "false"
+    _, _ -> False
+  }
+}
+
+fn step_frames(
+  state: State,
+  pid: Pid,
+  module: String,
+  line: Int,
+) -> Result(List(stepping.StackFrame), Nil) {
+  use meta <- result.try(int_get_meta(pid))
+  // Returning lands in the nearest callers first; deep recursion would make
+  // reading the whole stack slow.
+  use frames <- result.try(
+    int_frames(meta, step_frame_limit) |> result.replace_error(Nil),
+  )
+  case frames {
+    [] -> Error(Nil)
+    [top, ..rest] -> {
+      // The top frame's line is the one we stopped at; the others are
+      // where each caller is waiting.
+      let top = stepping.StackFrame(level: top.0, module:, line:)
+      let rest =
+        list.filter_map(rest, fn(f) {
+          case set.contains(state.interpreted, f.1) && f.4 > 0 {
+            True -> Ok(stepping.StackFrame(level: f.0, module: f.1, line: f.4))
+            False -> Error(Nil)
+          }
+        })
+      Ok([top, ..rest])
+    }
+  }
+}
+
+const step_frame_limit = 50
+
+@external(erlang, "gleam_dap_int_ffi", "frames")
+fn int_frames(
+  meta: Pid,
+  limit: Int,
+) -> Result(List(#(Int, String, String, Int, Int)), String)
+
+fn function_lookup(
+  state: State,
+) -> fn(String, Int) -> Result(project.FunctionInfo, Nil) {
+  fn(module, line) {
+    use index <- result.try(option.to_result(state.index, Nil))
+    use info <- result.try(project.get_module(index, module))
+    project.function_at(info, line)
+  }
+}
+
+fn start_targeted(
+  state: State,
+  pid: Pid,
+  targets: List(stepping.Target),
+) -> State {
+  let state =
+    State(
+      ..state,
+      step_targets: dict.insert(state.step_targets, pid, targets),
+      stepping: dict.insert(state.stepping, pid, Targeted),
+    )
+    |> sync_breaks
+  int_continue(pid)
+  state
+}
+
+/// Forgets a process's step, removing its temporary breakpoints.
+fn end_stepping(state: State, pid: Pid) -> State {
+  let state = State(..state, stepping: dict.delete(state.stepping, pid))
+  case dict.has_key(state.step_targets, pid) {
+    True ->
+      State(..state, step_targets: dict.delete(state.step_targets, pid))
+      |> sync_breaks
+    False -> state
+  }
+}
+
+/// Step over with `int`'s own commands, corrected for tail calls and `use`.
+fn start_int_step_over(
+  state: State,
+  pid: Pid,
+  module: String,
+  line: Int,
+) -> State {
   case current_frame(pid, module, line) {
     Ok(frame) -> {
       let defines_fun = case state.index {
@@ -1558,6 +1793,7 @@ fn register_thread(state: State, pid: Pid) -> #(State, Int) {
 }
 
 fn thread_exited(state: State, pid: Pid) -> State {
+  let state = end_stepping(state, pid)
   case threads.lookup(state.threads, pid) {
     Ok(id) -> {
       send_event(protocol.thread_event("exited", id))
@@ -1574,8 +1810,37 @@ fn on_break(state: State, pid: Pid, module: String, line: Int) -> State {
   case dict.get(state.stepping, pid) {
     _ if module == debug_module -> {
       // Stopped inside `debug.break()`: run on to the caller.
+      let _ = take_step_stop(pid)
+      let state = end_stepping(state, pid)
       int_finish(pid)
       State(..state, stepping: dict.insert(state.stepping, pid, DebugBreak))
+    }
+    Ok(Targeted) -> {
+      let on_target = take_step_stop(pid)
+      let paused = set.contains(state.pausing, pid)
+      let reason = case paused, on_target, at_breakpoint {
+        True, _, _ -> "pause"
+        False, False, _ -> "breakpoint"
+        // Both a step target and a breakpoint of the user's: a plain
+        // breakpoint would have stopped anyway.
+        False, True, True ->
+          case has_plain_breakpoint(state, module, line) {
+            True -> "breakpoint"
+            False -> "step"
+          }
+        False, True, False -> "step"
+      }
+      report_stop(
+        State(
+          ..end_stepping(state, pid),
+          pausing: set.delete(state.pausing, pid),
+        ),
+        pid,
+        thread_id,
+        module,
+        line,
+        reason,
+      )
     }
     Ok(DebugBreak) ->
       report_stop(
@@ -1721,7 +1986,7 @@ fn on_exit(
   reason: Dynamic,
   attached: Option(#(Pid, Pid)),
 ) -> State {
-  let state = State(..state, stepping: dict.delete(state.stepping, pid))
+  let state = end_stepping(state, pid)
   case attached {
     None -> thread_exited(state, pid)
     Some(#(meta, holder)) ->

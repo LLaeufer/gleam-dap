@@ -29,7 +29,9 @@ start(StackTrace) ->
 %% path from the module's `-file` attribute (relative to the package root
 %% for Gleam modules) and FunctionInfo is
 %% {function_info, Name, Arity, StartLine, EndLine, ClauseLines,
-%%  BreakableLines, LinesWithFun}.
+%%  BreakableLines, LinesWithFun, FunBodyLines} where FunBodyLines is
+%% [{Line, Depth}] for statements inside anonymous functions, Depth being how
+%% many anonymous functions they are nested in.
 
 analyse(BeamPath) ->
     case beam_lib:chunks(binary_to_list(BeamPath), [abstract_code]) of
@@ -52,14 +54,21 @@ analyse_function({function, Anno, Name, Arity, Clauses}) ->
     Start = line(Anno),
     put(gleam_dap_breakable, []),
     put(gleam_dap_with_fun, []),
+    put(gleam_dap_fun_body, []),
+    put(gleam_dap_fun_depth, 0),
     put(gleam_dap_max, Start),
     ClauseLines = [clause_first_line(C) || C <- Clauses],
     walk(Clauses),
     Breakable = lists:usort(erase(gleam_dap_breakable)),
     WithFun = lists:usort(erase(gleam_dap_with_fun)),
+    %% The innermost depth for lines shared by nested functions.
+    FunBody = maps:to_list(lists:foldl(
+        fun({L, D}, Acc) -> Acc#{L => max(D, maps:get(L, Acc, 0))} end,
+        #{}, erase(gleam_dap_fun_body))),
+    erase(gleam_dap_fun_depth),
     End = erase(gleam_dap_max),
     {function_info, atom_to_binary(Name, utf8), Arity, Start, End,
-     [L || L <- ClauseLines, L > 0], Breakable, WithFun}.
+     [L || L <- ClauseLines, L > 0], Breakable, WithFun, FunBody}.
 
 clause_first_line({clause, _, _, _, [First | _]}) -> line(element(2, First));
 clause_first_line(_) -> 0.
@@ -72,6 +81,12 @@ walk({clause, A, Patterns, Guards, Body}) ->
 walk({block, A, Body}) ->
     see(line(A)),
     statements(Body);
+walk({'fun', A, {clauses, Clauses}}) ->
+    see(line(A)),
+    in_fun(Clauses);
+walk({named_fun, A, _Name, Clauses}) ->
+    see(line(A)),
+    in_fun(Clauses);
 walk({'try', A, Body, Clauses, Catches, After}) ->
     see(line(A)),
     statements(Body),
@@ -90,6 +105,13 @@ walk([H | T]) ->
 walk(_) ->
     ok.
 
+%% Walks the clauses of an anonymous function, recording their statement
+%% lines as lines of a function body.
+in_fun(Clauses) ->
+    put(gleam_dap_fun_depth, get(gleam_dap_fun_depth) + 1),
+    walk(Clauses),
+    put(gleam_dap_fun_depth, get(gleam_dap_fun_depth) - 1).
+
 statements(Body) ->
     lists:foreach(
         fun(Expr) ->
@@ -97,6 +119,10 @@ statements(Body) ->
             case L > 0 of
                 true ->
                     put(gleam_dap_breakable, [L | get(gleam_dap_breakable)]),
+                    case get(gleam_dap_fun_depth) of
+                        0 -> ok;
+                        Depth -> put(gleam_dap_fun_body, [{L, Depth} | get(gleam_dap_fun_body)])
+                    end,
                     case contains_fun(Expr) of
                         true -> put(gleam_dap_with_fun, [L | get(gleam_dap_with_fun)]);
                         false -> ok

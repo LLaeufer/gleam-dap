@@ -1,7 +1,12 @@
 # What exactly do step over and step out do in Gleam code?
 
-**Already built:** `src/gleam_dap/stepping.gleam`, driven by the session's
-`next` handler; step in and step out map to `int`'s `step` and `finish`.
+**Already built:** step over and step out run on temporary breakpoints
+(`stepping.over_targets`/`out_targets` in `src/gleam_dap/stepping.gleam`,
+`start_targeted` in `src/gleam_dap/session.gleam`, and the condition check in
+`src/gleam_dap_eval_ffi.erl`). When attaching to a node, or with
+`stackTraceMode: "false"`, they fall back to `int`'s own `next` and `finish`
+with the tail-call corrections described under option B. Step in is
+`int:step`.
 
 ## Where and when it came up
 
@@ -10,76 +15,94 @@ on the fixture, two more cases showed up: the callback of a `use` runs one
 call level deeper, so `int`'s plain `next` skipped the rest of the function
 after a `use` line; and lambdas passed on the same line
 (`list.map(xs, fn(x) { ... })`) could either be stepped through or stopped
-in.
+in. The first version (option B) had one limitation Leonie asked about on
+11 October: a breakpoint inside a function being stepped over never stopped,
+because `int` only checks breakpoints at levels no deeper than the one a
+`next` or `finish` waits for (`dbg_icmd:cmd/4` in OTP's debugger). That led
+to option A.
 
 ## What I chose
 
-Step over:
+A step over from line L of function F at call level N puts a temporary
+breakpoint on:
 
-1. Normally issue `int:next`. When the current line defines an anonymous
-   function (a `use` line, or a `fn` passed as an argument), single-step
-   instead, because the code that comes "next" in the source may run inside
-   that function.
-2. After each stop, stop for real when:
-   - back in the starting function on the starting level (including a
-     tail call of itself),
-   - in an anonymous function defined in the starting function, on a
-     different line than the step started on (the body of a `use` callback),
-   - returned to a caller,
-   - at a breakpoint,
-   - or after 2,000 single steps (a safety net).
-3. In some other function on the starting level, that function was
-   tail-called: issue `finish` to run it to the end (unless single-stepping,
-   because then a callback of ours may still run inside it).
-4. Deeper, keep single-stepping.
+- every line of F, firing only at level N or higher up (so recursive calls
+  of F run through);
+- the lines of anonymous functions nested in F deeper than L's own nesting,
+  such as the callback of a `use` on L, firing at any level because they run
+  inside the calls; lambdas on L itself run through;
+- every line of each caller on the stack (up to 50 frames), firing at that
+  caller's level, for when F returns.
 
-Step out is `int:finish`, which stops at the caller's next statement.
+Then the process simply continues. Each temporary breakpoint has a condition
+that fires only in the stepping process and checks its current call level,
+which the condition reads from the interpreter's process dictionary
+(`get(self)` and `dbg_istk:stack_level()`; the condition runs in the
+interpreter's process for the program process). Breakpoints of the user's
+stop the process on the way, with reason `breakpoint`; the step's own targets
+stop it with reason `step`. Step out does the same with only the callers'
+lines. When the process stops for any reason, its temporary breakpoints are
+removed.
 
 ## Options
 
-### A. The algorithm above (chosen)
+### A. Temporary breakpoints plus continue (chosen)
 
-- Stepping over a `use` line goes into the callback's body, which is the
-  next line in the source; that is what people expect from reading the code.
-- Tail calls are stepped over in both stack trace modes.
-- Lambdas on the same line run through without stopping, like any other
-  call on that line.
-- Single-stepping is slower than `next` on lines that define a function and
-  call a lot (each step is a round trip to the interpreter).
-- Breakpoints in the code being stepped over are skipped, as `int` doesn't
-  check them during `next` and `finish`. Single-stepping does see them.
+- Breakpoints, conditions and logpoints inside the code being stepped over
+  or out of work, because the process runs normally.
+- Stepping over a call runs at full speed, however much work the call does.
+- `use` callbacks, tail calls and recursion behave as in option B (the same
+  tests pass with both).
+- Other processes running the same lines evaluate a cheap condition (two ETS
+  lookups) and carry on.
+- Relies on two internals of OTP's debugger: that conditions run in the
+  interpreter's process for the program process, where `self` holds that
+  process, and `dbg_istk:stack_level/0`. Both have been stable for many OTP
+  releases; the end-to-end tests would catch a change.
+- Each step adds and removes `int` breakpoints, a few dozen calls to the
+  debugger's server.
+- Not available when attaching (conditions run on the other node, where the
+  adapter's tables don't exist) or without a call stack
+  (`stackTraceMode: "false"`).
 
-### B. Plain `int:next` and `int:finish`
+### B. `int`'s `next`/`finish` with corrections (the first version, now the fallback)
 
-- Simple and fast.
-- After a `use` line the step jumps out of the function entirely; with
-  `no_tail` it stops inside tail-called functions. Both feel broken in
-  idiomatic Gleam.
+1. Normally issue `int:next`. When the current line defines an anonymous
+   function, single-step instead, because the code that comes "next" in the
+   source may run inside that function.
+2. After each stop, stop for real when back in the starting function on the
+   starting level, in an anonymous function defined in it on another line,
+   back in a caller, at a breakpoint, or after 2,000 single steps.
+3. In some other function on the starting level, that function was
+   tail-called: issue `finish` to run it to the end.
+
+- No internals beyond `int`'s public API.
+- Breakpoints inside the calls being stepped over are skipped.
 
 ### C. Always single-step and decide after every step
 
-- Breakpoints inside stepped-over calls would be hit, fixing the limitation
-  of A.
+- Sees every breakpoint, with only public API.
 - Every step over a call that does real work takes thousands of round trips;
-  stepping over `list.map` on a long list could take seconds.
+  stepping over `list.map` on a long list could take seconds, and a step
+  limit would cut long calls short.
 
-### D. Step over by setting temporary breakpoints on the following lines
+### D. Plain `int:next` and `int:finish`
 
-- How many debuggers do it; also hits user breakpoints in between.
-- Needs the set of lines that can come next, including inside `use`
-  callbacks and `case` branches, and cleaning up the breakpoints in every
-  process that might hit them.
+- Simplest.
+- After a `use` line the step jumps out of the function; with `no_tail` it
+  stops inside tail-called functions; breakpoints inside calls are skipped.
 
 ## Why
 
-A is correct for every construct in the fixture (functions, `case`, `use`,
-pipelines, lambdas, recursion, both stack modes; see the stepping tests in
-`test/integration_test.gleam` and `test/stepping_test.gleam`) and stays fast
-in the common case. The breakpoint-skipping limitation is documented in the
-README.
+A is the only option that stops at breakpoints inside stepped-over calls
+without making steps slow. The internals it relies on are small and covered
+by tests (`step_over_stops_at_breakpoints_inside_test`, its `no_tail`
+variant, and `step_out_stops_at_breakpoints_on_the_way_test`, which fail with
+option B).
 
 ## How to change it
 
-`stepping.decide` holds all the rules; C is `start` always returning `Step`
-and `decide` never returning `Finish`. The step limit is
-`stepping.step_limit`.
+To go back to B everywhere, make `targeted_steps` in
+`src/gleam_dap/session.gleam` return `False`. The target rules are
+`stepping.over_targets` and `stepping.out_targets`; B's rules are
+`stepping.decide`.

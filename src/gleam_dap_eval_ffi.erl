@@ -9,7 +9,8 @@
 
 -export([
     eval/2, set_labels/1, field/2,
-    set_conditions/2, check/2, interpolate/2, append/2
+    set_conditions/2, check/2, interpolate/2, append/2,
+    set_step_targets/1, take_step_stop/1
 ]).
 
 -define(EVAL_TIMEOUT, 5000).
@@ -227,24 +228,38 @@ index_of(X, [_ | T], I) -> index_of(X, T, I + 1).
 %% conditional breakpoint needs its own function. We generate a module with
 %% one `check_N/1` per slot, each calling `check(N, Bindings)`.
 
-%% Conditions is [{Slot, Condition, HitCondition, LogMessage}] where each
-%% field is a binary or `none`. OnLog is called with the logpoint output and
-%% OnError with error messages.
-set_conditions(Conditions, {OnLog, OnError}) ->
-    case ets:info(gleam_dap_conditions) of
-        undefined ->
-            ets:new(gleam_dap_conditions, [named_table, public, set]);
-        _ ->
-            ets:delete_all_objects(gleam_dap_conditions)
-    end,
+%% Every `int` breakpoint that needs a condition gets a slot: a function
+%% `gleam_dap_conditions:check_<Slot>/1` that `int` calls with the bindings.
+%% A slot serves the user's breakpoint on that line, if any, and the
+%% temporary breakpoints of steps in progress (see set_step_targets/1).
+%%
+%% Slots is [{Slot, Module, Line, User}] with User one of `no_user` (only
+%% steps break there), `plain` or {conditional, Condition, HitCondition,
+%% LogMessage}, each field a binary or `none`. Hit counts survive as long as
+%% the slot's user breakpoint stays the same. OnLog is called with the
+%% logpoint output and OnError with error messages.
+set_conditions(Slots, {OnLog, OnError}) ->
+    ensure_table(gleam_dap_conditions),
     persistent_term:put(gleam_dap_condition_callbacks, {OnLog, OnError}),
-    lists:foreach(
-        fun({Slot, Condition, Hit, Log}) ->
-            ets:insert(gleam_dap_conditions, {Slot, Condition, Hit, Log, 0})
-        end, Conditions),
-    Slots = lists:max([0 | [S || {S, _, _, _} <- Conditions]]),
-    ensure_module(Slots),
+    Old = maps:from_list([{S, {U, H}} || {S, _, _, U, H} <- ets:tab2list(gleam_dap_conditions)]),
+    New = [begin
+               Hits = case maps:get(Slot, Old, undefined) of
+                   {User, H} -> H;
+                   _ -> 0
+               end,
+               {Slot, binary_to_atom(Module, utf8), Line, User, Hits}
+           end || {Slot, Module, Line, User} <- Slots],
+    ets:insert(gleam_dap_conditions, New),
+    Keep = [S || {S, _, _, _} <- Slots],
+    [ets:delete(gleam_dap_conditions, S) || S <- maps:keys(Old), not lists:member(S, Keep)],
+    ensure_module(lists:max([0 | Keep])),
     nil.
+
+ensure_table(Name) ->
+    case ets:info(Name) of
+        undefined -> ets:new(Name, [named_table, public, set]);
+        _ -> Name
+    end.
 
 ensure_module(Slots) ->
     Current = persistent_term:get(gleam_dap_condition_slots, 0),
@@ -270,29 +285,88 @@ check_form(N) ->
        [{call, 1, {remote, 1, {atom, 1, ?MODULE}, {atom, 1, check}},
          [{integer, 1, N}, {var, 1, 'Bs'}]}]}]}.
 
-%% Runs inside the interpreter, so it must be quick and must never call into
+%% Runs inside the interpreter (in the meta process of the process that
+%% reached the line), so it must be quick and must never call into
 %% interpreted code.
 check(Slot, Bs) ->
     case ets:lookup(gleam_dap_conditions, Slot) of
-        [{Slot, Condition, Hit, Log, _}] ->
-            Bindings = [{atom_to_binary(K, utf8), V} || {K, V} <- erl_eval:bindings(Bs)],
-            case condition_holds(Condition, Bindings) of
+        [{Slot, Module, Line, User, _}] ->
+            step_target(Module, Line) orelse user_holds(Slot, User, Bs);
+        [] -> false
+    end.
+
+user_holds(_, no_user, _) -> false;
+user_holds(_, plain, _) -> true;
+user_holds(Slot, {conditional, Condition, Hit, Log}, Bs) ->
+    Bindings = [{atom_to_binary(K, utf8), V} || {K, V} <- erl_eval:bindings(Bs)],
+    case condition_holds(Condition, Bindings) of
+        false -> false;
+        true ->
+            Hits = ets:update_counter(gleam_dap_conditions, Slot, {5, 1}),
+            case hit_holds(Hit, Hits) of
                 false -> false;
                 true ->
-                    Hits = ets:update_counter(gleam_dap_conditions, Slot, {5, 1}),
-                    case hit_holds(Hit, Hits) of
-                        false -> false;
-                        true ->
-                            case Log of
-                                none -> true;
-                                Message ->
-                                    {OnLog, _} = callbacks(),
-                                    OnLog(interpolate(Message, Bindings)),
-                                    false
-                            end
+                    case Log of
+                        none -> true;
+                        Message ->
+                            {OnLog, _} = callbacks(),
+                            OnLog(interpolate(Message, Bindings)),
+                            false
                     end
-            end;
-        [] -> true
+            end
+    end.
+
+%% ---------------------------------------------------------------------------
+%% Step over and step out with temporary breakpoints.
+%%
+%% `int`'s own `next` and `finish` don't check breakpoints in the calls they
+%% run through. Instead, the adapter lets the process continue and puts
+%% temporary breakpoints on the lines where the step may end. A target only
+%% fires in the stepping process, and only at the right call depth.
+%%
+%% Targets is [{Pid, Module, Line, MaxLevel, AnyLevel}]: the step ends when
+%% Pid reaches Line in Module at call level MaxLevel or lower, or at any
+%% level when AnyLevel is true (lines of anonymous functions, such as the
+%% callback of a `use`).
+set_step_targets(Targets) ->
+    ensure_table(gleam_dap_step_targets),
+    ensure_table(gleam_dap_step_stops),
+    ets:delete_all_objects(gleam_dap_step_targets),
+    ets:insert(gleam_dap_step_targets,
+               [{{Pid, binary_to_atom(M, utf8), L}, Max, Any} || {Pid, M, L, Max, Any} <- Targets]),
+    nil.
+
+%% True if the process last stopped on a step target rather than on a
+%% breakpoint of the user's. Clears the mark.
+take_step_stop(Pid) ->
+    case ets:info(gleam_dap_step_stops) of
+        undefined -> false;
+        _ -> ets:take(gleam_dap_step_stops, Pid) =/= []
+    end.
+
+step_target(Module, Line) ->
+    case ets:info(gleam_dap_step_targets) of
+        undefined -> false;
+        _ ->
+            %% The interpreter keeps the process it runs for in `self`.
+            Pid = get(self),
+            case ets:lookup(gleam_dap_step_targets, {Pid, Module, Line}) of
+                [{_, Max, Any}] ->
+                    case Any orelse current_level() =< Max of
+                        true ->
+                            ets:insert(gleam_dap_step_stops, {Pid}),
+                            true;
+                        false -> false
+                    end;
+                [] -> false
+            end
+    end.
+
+%% The call level of the code being run, as `int:meta(Meta, backtrace, _)`
+%% reports it: one deeper than the top of the interpreter's call stack.
+current_level() ->
+    try dbg_istk:stack_level() + 1
+    catch _:_ -> 0
     end.
 
 callbacks() ->

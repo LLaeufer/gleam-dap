@@ -1,4 +1,9 @@
-//// "Step over" on top of `int`.
+//// "Step over" and "step out" on top of `int`.
+////
+//// Normally these run on temporary breakpoints (see `over_targets` below),
+//// so that breakpoints inside the calls being stepped over still stop. When
+//// that isn't possible (attaching to a node, or no call stack), step over
+//// falls back to `int`'s own commands, corrected as follows.
 ////
 //// `int`'s `next` stops at the next expression on the same call level or
 //// lower. Two things make that feel wrong in Gleam:
@@ -14,7 +19,14 @@
 //// defined inside it, or in a caller. When `next` lands in another function
 //// on the same level, that function was tail-called and we finish it.
 
+import gleam/dict
+import gleam/int
+import gleam/list
+import gleam/order
+import gleam/result
+import gleam/string
 import gleam_dap/names
+import gleam_dap/project.{type FunctionInfo}
 
 pub type Frame {
   Frame(module: String, function: String, arity: Int, level: Int, line: Int)
@@ -111,4 +123,107 @@ pub fn decide(state: StepOver, frame: Frame, at_breakpoint: Bool) -> Decision {
         False, False, _ -> Continue(Step, state)
       }
   }
+}
+
+// --- Steps through temporary breakpoints -------------------------------------
+//
+// `int`'s `next` and `finish` run calls without checking breakpoints in
+// them, so a breakpoint in a function being stepped over never stopped.
+// Instead of them, the session lets the process continue with temporary
+// breakpoints on every line where the step may end. Each one only fires in
+// the stepping process at a call level no deeper than `max_level`, or at any
+// level for the bodies of anonymous functions defined in the code being
+// stepped (the callback of a `use`). The process runs at full speed and
+// stops at the user's breakpoints on the way.
+
+/// A frame of the stopped process, from the top of the stack down.
+pub type StackFrame {
+  StackFrame(level: Int, module: String, line: Int)
+}
+
+pub type Target {
+  Target(module: String, line: Int, max_level: Int, any_level: Bool)
+}
+
+/// Where a step over from the top frame may end: the rest of the current
+/// function, anonymous functions nested in it, and the callers.
+pub fn over_targets(
+  frames: List(StackFrame),
+  lookup: fn(String, Int) -> Result(FunctionInfo, Nil),
+) -> Result(List(Target), Nil) {
+  case frames {
+    [] -> Error(Nil)
+    [top, ..callers] -> {
+      use function <- result.try(lookup(top.module, top.line))
+      let depth = fun_depth(function, top.line)
+      let own =
+        list.map(function.breakable, fn(line) {
+          let any_level = line != top.line && fun_depth(function, line) > depth
+          Target(top.module, line, top.level, any_level)
+        })
+      Ok(merge(list.append(own, caller_targets(callers, lookup))))
+    }
+  }
+}
+
+/// Where a step out from the top frame may end: the callers.
+pub fn out_targets(
+  frames: List(StackFrame),
+  lookup: fn(String, Int) -> Result(FunctionInfo, Nil),
+) -> List(Target) {
+  case frames {
+    [] -> []
+    [_, ..callers] -> merge(caller_targets(callers, lookup))
+  }
+}
+
+fn caller_targets(
+  callers: List(StackFrame),
+  lookup: fn(String, Int) -> Result(FunctionInfo, Nil),
+) -> List(Target) {
+  list.flat_map(callers, fn(frame) {
+    case lookup(frame.module, frame.line) {
+      Ok(function) ->
+        list.map(function.breakable, fn(line) {
+          Target(frame.module, line, frame.level, False)
+        })
+      Error(Nil) -> []
+    }
+  })
+}
+
+/// How many anonymous functions a line is nested in.
+fn fun_depth(function: FunctionInfo, line: Int) -> Int {
+  case list.key_find(function.fun_body_lines, line) {
+    Ok(depth) -> depth
+    Error(Nil) -> 0
+  }
+}
+
+/// One target per line: the most permissive one.
+fn merge(targets: List(Target)) -> List(Target) {
+  targets
+  |> list.fold(dict.new(), fn(acc, target) {
+    let key = #(target.module, target.line)
+    case dict.get(acc, key) {
+      Ok(existing) ->
+        dict.insert(
+          acc,
+          key,
+          Target(
+            ..existing,
+            max_level: int.max(existing.max_level, target.max_level),
+            any_level: existing.any_level || target.any_level,
+          ),
+        )
+      Error(Nil) -> dict.insert(acc, key, target)
+    }
+  })
+  |> dict.values
+  |> list.sort(fn(a, b) {
+    case string.compare(a.module, b.module) {
+      order.Eq -> int.compare(a.line, b.line)
+      other -> other
+    }
+  })
 }
