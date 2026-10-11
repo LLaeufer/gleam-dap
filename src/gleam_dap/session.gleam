@@ -753,16 +753,17 @@ fn set_breakpoints(state: State, request: Request) -> State {
     Some(index) -> project.module_for_path(index, path)
     None -> Error(Nil)
   }
+  let #(state, interpretable) = case module {
+    Ok(module) -> ensure_interpreted(state, module)
+    Error(Nil) -> #(state, Ok(Nil))
+  }
   let #(state, breakpoints) =
     list.map_fold(requested, state, fn(state, source) {
       let id = state.next_breakpoint_id
-      let resolved = case module {
-        Ok(module) ->
-          case set.contains(state.interpreted, module.module) {
-            True -> project.resolve_line(module, source.line)
-            False -> not_interpreted(module)
-          }
-        Error(Nil) ->
+      let resolved = case module, interpretable {
+        Ok(module), Ok(Nil) -> project.resolve_line(module, source.line)
+        Ok(_), Error(message) -> project.Unresolved(message)
+        Error(Nil), _ ->
           project.Unresolved("This file is not part of the debugged program")
       }
       let breakpoint =
@@ -800,13 +801,50 @@ fn set_breakpoints(state: State, request: Request) -> State {
   state
 }
 
-fn not_interpreted(module: ModuleInfo) -> project.Resolved {
-  project.Unresolved(not_interpreted_message(module))
-}
-
-fn not_interpreted_message(module: ModuleInfo) -> String {
-  names.module_to_gleam(module.module)
-  <> " is not interpreted. Add it to interpretModules in the launch configuration to debug it."
+/// Interprets a module when a breakpoint is set in it, if it wasn't
+/// interpreted at launch (a dependency, say), like ElixirLS does.
+fn ensure_interpreted(
+  state: State,
+  module: ModuleInfo,
+) -> #(State, Result(Nil, String)) {
+  case
+    set.contains(state.interpreted, module.module),
+    state.config,
+    state.index
+  {
+    True, _, _ -> #(state, Ok(Nil))
+    False, Some(config), Some(index) -> {
+      let interpreted = {
+        use _ <- result.try(launch.can_interpret_later(index, config, module))
+        int_interpret(
+          module.module,
+          module.source,
+          module.beam,
+          state.mode == Attach,
+        )
+        |> result.map_error(fn(reason) {
+          "Could not interpret "
+          <> names.module_to_gleam(module.module)
+          <> ": "
+          <> reason
+        })
+      }
+      case interpreted {
+        Ok(Nil) -> {
+          log.info("interpreted " <> module.module <> " for a breakpoint")
+          #(
+            State(
+              ..state,
+              interpreted: set.insert(state.interpreted, module.module),
+            ),
+            Ok(Nil),
+          )
+        }
+        Error(message) -> #(state, Error(message))
+      }
+    }
+    False, _, _ -> #(state, Error("Launch the program first"))
+  }
 }
 
 fn line_breakpoint_json(breakpoint: LineBreakpoint, path: String) -> Json {
@@ -855,16 +893,16 @@ fn set_function_breakpoints(state: State, request: Request) -> State {
     list.map_fold(requested, state, fn(state, item) {
       let #(name, condition, hit_condition) = item
       let id = state.next_breakpoint_id
-      let location = case state.index {
+      let #(state, location) = case state.index {
         Some(index) ->
-          find_function_breakpoint(index, name)
-          |> result.try(fn(found) {
-            case set.contains(state.interpreted, { found.0 }.module) {
-              True -> Ok(found)
-              False -> Error(not_interpreted_message(found.0))
+          case find_function_breakpoint(index, name) {
+            Ok(found) -> {
+              let #(state, interpretable) = ensure_interpreted(state, found.0)
+              #(state, result.replace(interpretable, found))
             }
-          })
-        None -> Error("Launch the program first")
+            Error(message) -> #(state, Error(message))
+          }
+        None -> #(state, Error("Launch the program first"))
       }
       #(
         State(..state, next_breakpoint_id: id + 1),

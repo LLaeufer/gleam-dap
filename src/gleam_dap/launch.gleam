@@ -314,6 +314,33 @@ pub fn modules_to_interpret(index: Index, config: Config) -> List(ModuleInfo) {
   })
 }
 
+/// Whether a module that wasn't interpreted at launch may be when a
+/// breakpoint is set in it.
+pub fn can_interpret_later(
+  index: Index,
+  config: Config,
+  module: ModuleInfo,
+) -> Result(Nil, String) {
+  let name = names.module_to_gleam(module.module)
+  case
+    config.no_debug,
+    list.any(config.exclude_modules, glob.matches(_, name)),
+    loaded_elsewhere(module.module, index.project_dir)
+  {
+    True, _, _ -> Error("The program runs without debugging")
+    _, True, _ ->
+      Error(
+        name <> " is excluded by excludeModules in the launch configuration",
+      )
+    _, _, True ->
+      Error(
+        name
+        <> " is used by the debugger itself, so it can't be interpreted. Its code runs, but breakpoints in it don't stop.",
+      )
+    False, False, False -> Ok(Nil)
+  }
+}
+
 /// Interprets modules in parallel, on all connected nodes when
 /// `distributed`. Returns the failures.
 pub fn interpret(

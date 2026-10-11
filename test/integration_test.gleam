@@ -556,6 +556,58 @@ pub fn program_with_dependencies_test() {
   finish(client)
 }
 
+/// A breakpoint in a dependency interprets it, without interpretModules.
+pub fn interpret_on_demand_test() {
+  let client =
+    dap_client.launch_project(
+      dap_client.project_root() <> "/fixtures/with_deps",
+      [],
+    )
+  let response =
+    request(client, "setFunctionBreakpoints", [
+      #(
+        "breakpoints",
+        JArray([JObject([#("name", JString("gleam/list.fold"))])]),
+      ),
+    ])
+  let assert [#(verified, message)] =
+    get(
+      response,
+      ["body", "breakpoints"],
+      decode.list({
+        use verified <- decode.field("verified", decode.bool)
+        use message <- decode.optional_field("message", "", decode.string)
+        decode.success(#(verified, message))
+      }),
+    )
+  let packaged = get_env("GLEAM_DAP_COMMAND") |> result_is_ok
+  assert verified == packaged
+  let _ = request(client, "configurationDone", [])
+  case packaged {
+    // The packaged adapter has its own renamed gleam_stdlib, so the
+    // program's copy is free to interpret.
+    True -> {
+      let #(thread, _, frames) = wait_stop(client)
+      let assert [frame, ..] = frames
+      assert frame.name == "gleam/list.fold"
+      // `fold` calls itself, so clear the breakpoint before going on.
+      let _ =
+        request(client, "setFunctionBreakpoints", [
+          #("breakpoints", JArray([])),
+        ])
+      let _ = request(client, "continue", thread_arg(thread))
+      Nil
+    }
+    // Run from the source tree, the adapter uses that gleam_stdlib itself.
+    False -> {
+      assert string.contains(message, "used by the debugger itself")
+      Nil
+    }
+  }
+  let _ = wait_event(client, "terminated")
+  finish(client)
+}
+
 fn result_is_ok(r: Result(a, b)) -> Bool {
   case r {
     Ok(_) -> True
