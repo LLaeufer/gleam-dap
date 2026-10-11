@@ -21,7 +21,10 @@ get_env(Name) ->
 start_target(Cookie) ->
     {ok, Cwd} = file:get_cwd(),
     Ebins = filelib:wildcard(filename:join(Cwd, "fixtures/sample/build/dev/erlang/*/ebin")),
-    Name = "gleam_dap_target_" ++ integer_to_list(erlang:unique_integer([positive])),
+    %% The OS pid keeps names apart from targets of earlier test runs that
+    %% may still be shutting down.
+    Name = "gleam_dap_target_" ++ os:getpid() ++ "_"
+           ++ integer_to_list(erlang:unique_integer([positive])),
     {ok, Host} = inet:gethostname(),
     Port = open_port({spawn_executable, os:find_executable("erl")},
                      [{args, ["-sname", Name, "-setcookie", binary_to_list(Cookie),
@@ -54,7 +57,7 @@ probe(Node, Cookie) ->
     NodeAtom = binary_to_atom(Node, utf8),
     case node() of
         nonode@nohost ->
-            {ok, _} = net_kernel:start(list_to_atom("gleam_dap_probe_" ++
+            {ok, _} = net_kernel:start(list_to_atom("gleam_dap_probe_" ++ os:getpid() ++ "_" ++
                           integer_to_list(erlang:unique_integer([positive]))),
                           #{name_domain => shortnames});
         _ -> ok

@@ -16,7 +16,22 @@ detach_all() ->
     catch int:no_break(),
     catch gleam_dap_eval_ffi:unload_remote(),
     catch int:nn(int:interpreted()),
+    %% A process in the middle of an interpreted call still needs the
+    %% debugger's server to finish it. Give such calls a moment before the
+    %% adapter goes away, or they crash on the node.
+    wait_until_idle(50),
     nil.
+
+wait_until_idle(0) -> ok;
+wait_until_idle(N) ->
+    Busy = [P || {P, _, Status, _} <- catch_snapshot(), Status =/= idle, Status =/= exit],
+    case Busy of
+        [] -> ok;
+        _ -> timer:sleep(20), wait_until_idle(N - 1)
+    end.
+
+catch_snapshot() ->
+    try int:snapshot() catch _:_ -> [] end.
 
 %% Stops an attached node, for "terminate" in an attach session.
 stop_node(<<>>) -> nil;
