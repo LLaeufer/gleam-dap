@@ -1,7 +1,7 @@
 -module(test_ffi).
 -export([to_dynamic/1, make_pid/0, make_fun/0, bits/0, improper/0, map/0,
          write_file/2, get_env/1, start_target/1, stop_target/2,
-         target_down/2]).
+         target_down/2, run_on_target/2]).
 
 to_dynamic(X) -> X.
 make_pid() -> list_to_pid("<0.42.0>").
@@ -61,3 +61,9 @@ probe(Node, Cookie) ->
     end,
     erlang:set_cookie(NodeAtom, binary_to_atom(Cookie, utf8)),
     NodeAtom.
+
+%% Runs `sample.main` on the node, as a new process.
+run_on_target(Node, Cookie) ->
+    NodeAtom = probe(Node, Cookie),
+    _ = spawn(NodeAtom, sample, main, []),
+    nil.

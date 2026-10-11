@@ -423,6 +423,7 @@ fn prepare(
       }
     Launch -> Ok(Nil)
   })
+  set_remote_conditions(mode == Attach)
   use _ <- result.try(launch.check_versions(config))
   use build_output <- result.try(
     launch.build(config)
@@ -604,6 +605,9 @@ fn int_delete_break(module: String, line: Int) -> Nil
 
 @external(erlang, "gleam_dap_int_ffi", "set_condition")
 fn int_set_condition(module: String, line: Int, check: #(String, String)) -> Nil
+
+@external(erlang, "gleam_dap_eval_ffi", "set_remote")
+fn set_remote_conditions(remote: Bool) -> Nil
 
 @external(erlang, "gleam_dap_eval_ffi", "set_conditions")
 fn set_conditions(
@@ -1521,12 +1525,11 @@ fn start_step_out(state: State, pid: Pid, module: String, line: Int) -> State {
 }
 
 /// Steps run on temporary breakpoints when the interpreter keeps a call
-/// stack (their conditions need the call level) and the program runs in
-/// the adapter's own VM (their conditions run where the program runs).
+/// stack: their conditions need the call level.
 fn targeted_steps(state: State) -> Bool {
-  case state.mode, state.config {
-    Launch, Some(config) -> config.stack_trace_mode != "false"
-    _, _ -> False
+  case state.config {
+    Some(config) -> config.stack_trace_mode != "false"
+    None -> False
   }
 }
 

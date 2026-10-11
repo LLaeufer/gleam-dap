@@ -9,7 +9,8 @@
 
 -export([
     eval/2, set_labels/1, field/2,
-    set_conditions/2, check/2, interpolate/2, append/2,
+    set_conditions/2, check/4, interpolate/2, append/2, set_remote/1,
+    unload_remote/0,
     set_step_targets/1, take_step_stop/1
 ]).
 
@@ -261,37 +262,97 @@ ensure_table(Name) ->
         _ -> Name
     end.
 
+%% The conditions run in the interpreter's meta processes, which live on
+%% the node of the process being debugged. When attached to another node,
+%% the generated module is loaded there too and calls back to the adapter,
+%% where the tables and the evaluator are.
+set_remote(Remote) ->
+    persistent_term:put(gleam_dap_condition_remote, Remote),
+    nil.
+
 ensure_module(Slots) ->
-    Current = persistent_term:get(gleam_dap_condition_slots, 0),
-    case Slots =< Current of
+    Remote = persistent_term:get(gleam_dap_condition_remote, false),
+    {Current, CurrentRemote} = persistent_term:get(gleam_dap_condition_slots, {0, false}),
+    case Slots =< Current andalso Remote =:= CurrentRemote of
         true -> ok;
         false ->
             Size = ((Slots div 32) + 1) * 32,
             Mod = gleam_dap_conditions,
-            Forms = [{attribute, 1, module, Mod},
-                     {attribute, 1, export, [{check_name(N), 1} || N <- lists:seq(1, Size)]}
-                     | [check_form(N) || N <- lists:seq(1, Size)]],
-            {ok, Mod, Bin} = compile:forms(Forms, [binary]),
+            {ok, Mod, Bin} = compile:forms(condition_forms(Size, Remote), [binary]),
+            File = "gleam_dap_conditions.erl",
             code:purge(Mod),
-            {module, Mod} = code:load_binary(Mod, "gleam_dap_conditions.erl", Bin),
-            persistent_term:put(gleam_dap_condition_slots, Size)
+            {module, Mod} = code:load_binary(Mod, File, Bin),
+            case Remote of
+                true ->
+                    %% Only MFAs: a fun would need this module over there.
+                    [begin
+                         catch erpc:call(N, code, purge, [Mod], 5000),
+                         catch erpc:call(N, code, load_binary, [Mod, File, Bin], 5000)
+                     end || N <- nodes()];
+                false -> ok
+            end,
+            persistent_term:put(gleam_dap_condition_slots, {Size, Remote})
     end.
 
-check_name(N) -> list_to_atom("check_" ++ integer_to_list(N)).
+%% Removes the generated module from the attached nodes, when detaching.
+unload_remote() ->
+    case persistent_term:get(gleam_dap_condition_remote, false) of
+        true ->
+            [[catch erpc:call(N, code, F, [gleam_dap_conditions], 5000)
+              || F <- [purge, delete, purge]]
+             || N <- nodes()];
+        false -> ok
+    end,
+    nil.
 
-check_form(N) ->
-    {function, 1, check_name(N), 1,
-     [{clause, 1, [{var, 1, 'Bs'}], [],
-       [{call, 1, {remote, 1, {atom, 1, ?MODULE}, {atom, 1, check}},
-         [{integer, 1, N}, {var, 1, 'Bs'}]}]}]}.
+%% check_1/1 .. check_Size/1, each calling check/4 with its slot, the
+%% debugged process and its call level, read where the condition runs.
+condition_forms(Size, Remote) ->
+    Call = case Remote of
+        false ->
+            "gleam_dap_eval_ffi:check(N, Bs, get(self), level())";
+        true ->
+            io_lib:format("try erpc:call(~p, gleam_dap_eval_ffi, check, "
+                          "[N, Bs, get(self), level()], 30000) "
+                          "catch _:_ -> false end", [node()])
+    end,
+    Checks = [io_lib:format("check_~b(Bs) -> call(~b, Bs).~n", [N, N])
+              || N <- lists:seq(1, Size)],
+    Exports = lists:join(",", [io_lib:format("check_~b/1", [N]) || N <- lists:seq(1, Size)]),
+    Text = lists:flatten([
+        "-module(gleam_dap_conditions).\n",
+        "-export([", Exports, "]).\n",
+        Checks,
+        "call(N, Bs) -> ", Call, ".\n",
+        %% The call level as `int:meta(Meta, backtrace, _)` reports it: one
+        %% deeper than the top of the interpreter's call stack.
+        "level() -> try dbg_istk:stack_level() + 1 catch _:_ -> 0 end.\n"]),
+    parse_forms(Text).
 
-%% Runs inside the interpreter (in the meta process of the process that
-%% reached the line), so it must be quick and must never call into
-%% interpreted code.
-check(Slot, Bs) ->
+parse_forms(Text) ->
+    case erl_scan:tokens([], Text, 1) of
+        {done, {ok, Tokens, End}, Rest} ->
+            {ok, Form} = erl_parse:parse_form(Tokens),
+            [Form | parse_forms_from(Rest, End)];
+        _ -> []
+    end.
+
+parse_forms_from(eof, _) -> [];
+parse_forms_from(Rest, Line) ->
+    case erl_scan:tokens([], Rest, Line) of
+        {done, {ok, Tokens, End}, More} ->
+            {ok, Form} = erl_parse:parse_form(Tokens),
+            [Form | parse_forms_from(More, End)];
+        _ -> []
+    end.
+
+%% Called from the generated module, inside the interpreter (or, when
+%% attached, from it over distribution). Must be quick and must never call
+%% into interpreted code.
+check(Slot, Bs, Pid, Level) ->
     case ets:lookup(gleam_dap_conditions, Slot) of
         [{Slot, Module, Line, User, _}] ->
-            step_target(Module, Line) orelse user_holds(Slot, User, Bs);
+            step_target(Module, Line, Pid, Level) orelse user_holds(Slot, User, Bs);
         [] -> false
     end.
 
@@ -344,15 +405,15 @@ take_step_stop(Pid) ->
         _ -> ets:take(gleam_dap_step_stops, Pid) =/= []
     end.
 
-step_target(Module, Line) ->
+%% Pid is the process that reached the line (the interpreter keeps it in
+%% `self`) and Level its call level.
+step_target(Module, Line, Pid, Level) ->
     case ets:info(gleam_dap_step_targets) of
         undefined -> false;
         _ ->
-            %% The interpreter keeps the process it runs for in `self`.
-            Pid = get(self),
             case ets:lookup(gleam_dap_step_targets, {Pid, Module, Line}) of
                 [{_, Max, Any}] ->
-                    case Any orelse current_level() =< Max of
+                    case Any orelse Level =< Max of
                         true ->
                             ets:insert(gleam_dap_step_stops, {Pid}),
                             true;
@@ -360,13 +421,6 @@ step_target(Module, Line) ->
                     end;
                 [] -> false
             end
-    end.
-
-%% The call level of the code being run, as `int:meta(Meta, backtrace, _)`
-%% reports it: one deeper than the top of the interpreter's call stack.
-current_level() ->
-    try dbg_istk:stack_level() + 1
-    catch _:_ -> 0
     end.
 
 callbacks() ->

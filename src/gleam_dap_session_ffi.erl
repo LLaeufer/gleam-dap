@@ -14,6 +14,7 @@ spawn_worker(Fun) ->
 detach_all() ->
     catch int:auto_attach(false),
     catch int:no_break(),
+    catch gleam_dap_eval_ffi:unload_remote(),
     catch int:nn(int:interpreted()),
     nil.
 

@@ -597,6 +597,60 @@ fn attach_with(command: String) {
   assert stop_target(node, cookie) == dynamic.list([])
 }
 
+@external(erlang, "test_ffi", "run_on_target")
+fn run_on_target(node: String, cookie: String) -> Nil
+
+/// Conditions, logpoints and stepping over calls with breakpoints inside
+/// work on an attached node too.
+pub fn attach_conditions_and_stepping_test() {
+  let cookie = "gleam_dap_test"
+  let node = start_target(cookie)
+  let client = dap_client.start_and_initialize()
+  let response =
+    request(client, "attach", [
+      #("projectDir", JString(dap_client.fixture())),
+      #("node", JString(node)),
+      #("cookie", JString(cookie)),
+    ])
+  assert dap_client.success(response)
+  let _ = wait_event(client, "initialized")
+  let _ =
+    request(client, "setBreakpoints", [
+      #("source", source("sample.gleam")),
+      #(
+        "breakpoints",
+        JArray([
+          JObject([#("line", JInt(10))]),
+          JObject([
+            #("line", JInt(26)),
+            #("logMessage", JString("greeting {name}")),
+          ]),
+          JObject([
+            #("line", JInt(27)),
+            #("condition", JString("name == \"Ada\"")),
+          ]),
+        ]),
+      ),
+    ])
+  let _ = request(client, "configurationDone", [])
+  run_on_target(node, cookie)
+  let #(thread, _, frames) = wait_stop(client)
+  assert top(frames) == #("sample.main", 10)
+  let _ = request(client, "next", thread_arg(thread))
+  // The logpoint on the way logs before the step stops.
+  assert wait_until_output(client, "greeting") == "greeting \"Ada\"\n"
+  let #(_, reason, frames) = wait_stop(client)
+  assert reason == "breakpoint"
+  assert top(frames) == #("sample.greet", 27)
+  let _ = request(client, "next", thread_arg(thread))
+  let #(_, reason, frames) = wait_stop(client)
+  assert reason == "step"
+  assert top(frames) == #("sample.main", 11)
+  let _ = request(client, "disconnect", [#("terminateDebuggee", JBool(False))])
+  dap_client.stop(client)
+  assert stop_target(node, cookie) == dynamic.list([])
+}
+
 pub fn terminate_attached_node_test() {
   let cookie = "gleam_dap_test"
   let node = start_target(cookie)
