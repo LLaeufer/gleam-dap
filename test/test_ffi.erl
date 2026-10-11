@@ -1,7 +1,7 @@
 -module(test_ffi).
 -export([to_dynamic/1, make_pid/0, make_fun/0, bits/0, improper/0, map/0,
          write_file/2, get_env/1, start_target/1, stop_target/2,
-         target_down/2]).
+         target_down/2, run_on_target/2]).
 
 to_dynamic(X) -> X.
 make_pid() -> list_to_pid("<0.42.0>").
@@ -21,7 +21,10 @@ get_env(Name) ->
 start_target(Cookie) ->
     {ok, Cwd} = file:get_cwd(),
     Ebins = filelib:wildcard(filename:join(Cwd, "fixtures/sample/build/dev/erlang/*/ebin")),
-    Name = "gleam_dap_target_" ++ integer_to_list(erlang:unique_integer([positive])),
+    %% The OS pid keeps names apart from targets of earlier test runs that
+    %% may still be shutting down.
+    Name = "gleam_dap_target_" ++ os:getpid() ++ "_"
+           ++ integer_to_list(erlang:unique_integer([positive])),
     {ok, Host} = inet:gethostname(),
     Port = open_port({spawn_executable, os:find_executable("erl")},
                      [{args, ["-sname", Name, "-setcookie", binary_to_list(Cookie),
@@ -54,10 +57,16 @@ probe(Node, Cookie) ->
     NodeAtom = binary_to_atom(Node, utf8),
     case node() of
         nonode@nohost ->
-            {ok, _} = net_kernel:start(list_to_atom("gleam_dap_probe_" ++
+            {ok, _} = net_kernel:start(list_to_atom("gleam_dap_probe_" ++ os:getpid() ++ "_" ++
                           integer_to_list(erlang:unique_integer([positive]))),
                           #{name_domain => shortnames});
         _ -> ok
     end,
     erlang:set_cookie(NodeAtom, binary_to_atom(Cookie, utf8)),
     NodeAtom.
+
+%% Runs `sample.main` on the node, as a new process.
+run_on_target(Node, Cookie) ->
+    NodeAtom = probe(Node, Cookie),
+    _ = spawn(NodeAtom, sample, main, []),
+    nil.

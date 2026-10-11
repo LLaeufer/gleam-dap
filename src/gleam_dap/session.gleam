@@ -126,6 +126,11 @@ pub type State {
     program: Option(Pid),
     program_state: ProgramState,
     workers: Dict(Int, Pid),
+    /// The `initialize` request as it came, for a child adapter.
+    initialize_body: Option(BitArray),
+    /// When the program has arguments, the child adapter that runs it; this
+    /// one only relays messages to it.
+    relay: Option(Pid),
   )
 }
 
@@ -192,6 +197,8 @@ pub fn new_state(subject: Subject(Message)) -> State {
     program: None,
     program_state: NotStarted,
     workers: dict.new(),
+    initialize_body: None,
+    relay: None,
   )
 }
 
@@ -208,11 +215,28 @@ fn loop(state: State) -> Nil {
 
 pub fn handle_message(state: State, message: Message) -> State {
   case message {
+    Incoming(body) if state.relay != None -> {
+      let assert Some(relay) = state.relay
+      relay_forward(relay, body)
+      state
+    }
     Incoming(body) ->
       case json.parse(body) |> result.try(protocol.decode_request) {
         Ok(request) -> {
           log.info("<- " <> request.command)
-          handle_request(state, request)
+          case request.command, state.initialized {
+            "initialize", _ ->
+              handle_request(
+                State(..state, initialize_body: Some(body)),
+                request,
+              )
+            "launch", True ->
+              case program_args(request) {
+                [_, ..] as args -> start_relay(state, args, body)
+                [] -> handle_request(state, request)
+              }
+            _, _ -> handle_request(state, request)
+          }
         }
         Error(Nil) -> {
           log.info("ignoring message that is not a request")
@@ -229,6 +253,52 @@ pub fn handle_message(state: State, message: Message) -> State {
     FinishProgram -> finish_program(state)
     WorkerDone(seq) -> State(..state, workers: dict.delete(state.workers, seq))
     Halt -> state
+  }
+}
+
+// --- Program arguments ------------------------------------------------------
+
+@external(erlang, "gleam_dap_relay_ffi", "is_child")
+fn is_child() -> Bool
+
+@external(erlang, "gleam_dap_relay_ffi", "start")
+fn relay_start(
+  args: List(String),
+  initialize: BitArray,
+  launch: BitArray,
+  on_exit: fn(Int) -> Nil,
+) -> Pid
+
+@external(erlang, "gleam_dap_relay_ffi", "forward")
+fn relay_forward(relay: Pid, body: BitArray) -> Nil
+
+/// The program's arguments, when this adapter has to start a child adapter
+/// for them: they can only be given to a VM when it starts (see
+/// `gleam_dap_relay_ffi`).
+fn program_args(request: Request) -> List(String) {
+  case is_child(), launch.decode_config(request.arguments, "") {
+    False, Ok(config) if config.node == "" -> config.args
+    _, _ -> []
+  }
+}
+
+fn start_relay(
+  state: State,
+  args: List(String),
+  launch_body: BitArray,
+) -> State {
+  let subject = state.subject
+  case state.initialize_body {
+    Some(initialize) -> {
+      log.info("starting a child adapter for the program's arguments")
+      let relay =
+        relay_start(args, initialize, launch_body, fn(status) {
+          log.info("child adapter exited with " <> int.to_string(status))
+          process.send(subject, Halt)
+        })
+      State(..state, relay: Some(relay))
+    }
+    None -> state
   }
 }
 
@@ -423,6 +493,7 @@ fn prepare(
       }
     Launch -> Ok(Nil)
   })
+  set_remote_conditions(mode == Attach)
   use _ <- result.try(launch.check_versions(config))
   use build_output <- result.try(
     launch.build(config)
@@ -605,6 +676,9 @@ fn int_delete_break(module: String, line: Int) -> Nil
 @external(erlang, "gleam_dap_int_ffi", "set_condition")
 fn int_set_condition(module: String, line: Int, check: #(String, String)) -> Nil
 
+@external(erlang, "gleam_dap_eval_ffi", "set_remote")
+fn set_remote_conditions(remote: Bool) -> Nil
+
 @external(erlang, "gleam_dap_eval_ffi", "set_conditions")
 fn set_conditions(
   slots: List(#(Int, String, Int, SlotUser)),
@@ -679,16 +753,17 @@ fn set_breakpoints(state: State, request: Request) -> State {
     Some(index) -> project.module_for_path(index, path)
     None -> Error(Nil)
   }
+  let #(state, interpretable) = case module {
+    Ok(module) -> ensure_interpreted(state, module)
+    Error(Nil) -> #(state, Ok(Nil))
+  }
   let #(state, breakpoints) =
     list.map_fold(requested, state, fn(state, source) {
       let id = state.next_breakpoint_id
-      let resolved = case module {
-        Ok(module) ->
-          case set.contains(state.interpreted, module.module) {
-            True -> project.resolve_line(module, source.line)
-            False -> not_interpreted(module)
-          }
-        Error(Nil) ->
+      let resolved = case module, interpretable {
+        Ok(module), Ok(Nil) -> project.resolve_line(module, source.line)
+        Ok(_), Error(message) -> project.Unresolved(message)
+        Error(Nil), _ ->
           project.Unresolved("This file is not part of the debugged program")
       }
       let breakpoint =
@@ -726,13 +801,50 @@ fn set_breakpoints(state: State, request: Request) -> State {
   state
 }
 
-fn not_interpreted(module: ModuleInfo) -> project.Resolved {
-  project.Unresolved(not_interpreted_message(module))
-}
-
-fn not_interpreted_message(module: ModuleInfo) -> String {
-  names.module_to_gleam(module.module)
-  <> " is not interpreted. Add it to interpretModules in the launch configuration to debug it."
+/// Interprets a module when a breakpoint is set in it, if it wasn't
+/// interpreted at launch (a dependency, say), like ElixirLS does.
+fn ensure_interpreted(
+  state: State,
+  module: ModuleInfo,
+) -> #(State, Result(Nil, String)) {
+  case
+    set.contains(state.interpreted, module.module),
+    state.config,
+    state.index
+  {
+    True, _, _ -> #(state, Ok(Nil))
+    False, Some(config), Some(index) -> {
+      let interpreted = {
+        use _ <- result.try(launch.can_interpret_later(index, config, module))
+        int_interpret(
+          module.module,
+          module.source,
+          module.beam,
+          state.mode == Attach,
+        )
+        |> result.map_error(fn(reason) {
+          "Could not interpret "
+          <> names.module_to_gleam(module.module)
+          <> ": "
+          <> reason
+        })
+      }
+      case interpreted {
+        Ok(Nil) -> {
+          log.info("interpreted " <> module.module <> " for a breakpoint")
+          #(
+            State(
+              ..state,
+              interpreted: set.insert(state.interpreted, module.module),
+            ),
+            Ok(Nil),
+          )
+        }
+        Error(message) -> #(state, Error(message))
+      }
+    }
+    False, _, _ -> #(state, Error("Launch the program first"))
+  }
 }
 
 fn line_breakpoint_json(breakpoint: LineBreakpoint, path: String) -> Json {
@@ -781,16 +893,16 @@ fn set_function_breakpoints(state: State, request: Request) -> State {
     list.map_fold(requested, state, fn(state, item) {
       let #(name, condition, hit_condition) = item
       let id = state.next_breakpoint_id
-      let location = case state.index {
+      let #(state, location) = case state.index {
         Some(index) ->
-          find_function_breakpoint(index, name)
-          |> result.try(fn(found) {
-            case set.contains(state.interpreted, { found.0 }.module) {
-              True -> Ok(found)
-              False -> Error(not_interpreted_message(found.0))
+          case find_function_breakpoint(index, name) {
+            Ok(found) -> {
+              let #(state, interpretable) = ensure_interpreted(state, found.0)
+              #(state, result.replace(interpretable, found))
             }
-          })
-        None -> Error("Launch the program first")
+            Error(message) -> #(state, Error(message))
+          }
+        None -> #(state, Error("Launch the program first"))
       }
       #(
         State(..state, next_breakpoint_id: id + 1),
@@ -1286,12 +1398,29 @@ fn scopes(state: State, request: Request) -> State {
 fn variables(state: State, request: Request) -> State {
   let decoder = {
     use reference <- decode.field("variablesReference", decode.int)
-    decode.success(reference)
+    use start <- decode.optional_field(
+      "start",
+      None,
+      decode.optional(decode.int),
+    )
+    use count <- decode.optional_field(
+      "count",
+      None,
+      decode.optional(decode.int),
+    )
+    use filter <- decode.optional_field(
+      "filter",
+      None,
+      decode.optional(decode.string),
+    )
+    decode.success(#(reference, inspect.Page(start:, count:, filter:)))
   }
-  use reference <- decode_args(request, decoder, _, state)
+  use #(reference, page) <- decode_args(request, decoder, _, state)
   case context(state) {
     Ok(ctx) ->
-      in_worker(state, request, fn() { inspect.variables_body(ctx, reference) })
+      in_worker(state, request, fn() {
+        inspect.variables_body(ctx, reference, page)
+      })
     Error(message) -> {
       respond_error(request, message)
       state
@@ -1504,12 +1633,11 @@ fn start_step_out(state: State, pid: Pid, module: String, line: Int) -> State {
 }
 
 /// Steps run on temporary breakpoints when the interpreter keeps a call
-/// stack (their conditions need the call level) and the program runs in
-/// the adapter's own VM (their conditions run where the program runs).
+/// stack: their conditions need the call level.
 fn targeted_steps(state: State) -> Bool {
-  case state.mode, state.config {
-    Launch, Some(config) -> config.stack_trace_mode != "false"
-    _, _ -> False
+  case state.config {
+    Some(config) -> config.stack_trace_mode != "false"
+    None -> False
   }
 }
 

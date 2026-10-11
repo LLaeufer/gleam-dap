@@ -1,8 +1,11 @@
 # What language does the debug console speak?
 
-**Already built:** Erlang expressions with a Gleam layer
-(`src/gleam_dap_eval_ffi.erl`). The same evaluator runs watches, hovers,
-breakpoint conditions and logpoint `{...}` parts.
+**Already built:** first Erlang with a Gleam layer (option A, in PR #4),
+now real Gleam expressions (option C, in PR #5): see
+[23-gleam-evaluator.md](23-gleam-evaluator.md) for how the Gleam front end
+was built. The Erlang path below stays as the fallback for input that isn't
+Gleam. The same evaluator runs watches, hovers, breakpoint conditions and
+logpoint `{...}` parts.
 
 ## Where and when it came up
 
@@ -52,7 +55,8 @@ runs in a separate process with a 5 second timeout.
 
 ## Why
 
-A covers the common cases cheaply and leaves C open. The plan already
+A covered the common cases cheaply and left C open. C was built later to
+close the gap with ElixirLS, which evaluates real Elixir. The plan already
 expected Erlang expressions at first.
 
 ## How to change it

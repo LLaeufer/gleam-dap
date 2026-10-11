@@ -1,0 +1,3 @@
+# Keep LF line endings on Windows checkouts too: the golden files and the
+# fixtures' line numbers are compared byte for byte.
+* text=auto eol=lf

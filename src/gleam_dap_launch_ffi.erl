@@ -14,7 +14,9 @@ loaded_elsewhere(Module, ProjectDir) ->
         false -> code:which(Mod)
     end,
     case Path of
-        P2 when is_list(P2) -> not lists:prefix(Dir, P2);
+        P2 when is_list(P2) ->
+            Inside = <<(gleam_dap_ffi:absname(Dir))/binary, "/">>,
+            string:prefix(gleam_dap_ffi:absname(P2), Inside) =:= nomatch;
         non_existing -> false;
         _ -> true
     end.
@@ -35,7 +37,9 @@ eunit_args(Modules) ->
 start_distribution() ->
     case node() of
         nonode@nohost ->
-            Name = list_to_atom("gleam_dap_" ++ integer_to_list(erlang:unique_integer([positive]))),
+            %% The OS pid keeps two adapters started together apart.
+            Name = list_to_atom("gleam_dap_" ++ os:getpid() ++ "_"
+                                ++ integer_to_list(erlang:unique_integer([positive]))),
             NameType = case net_kernel:start(Name, #{name_domain => shortnames}) of
                 {ok, _} -> ok;
                 {error, _} ->
@@ -87,3 +91,4 @@ get_env(Name) ->
         "" -> {error, nil};
         Value -> {ok, unicode:characters_to_binary(Value)}
     end.
+

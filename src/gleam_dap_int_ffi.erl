@@ -213,6 +213,10 @@ set_condition(Module, Line, {M, F}) ->
 
 auto_attach(Callback) ->
     int:auto_attach([break, exit], {?MODULE, on_attach, [Callback]}),
+    %% When attached, a running process can reach a breakpoint between
+    %% `setBreakpoints` and `configurationDone`, before anyone listens.
+    %% Report those now, or they stay stopped with nobody told.
+    [on_attach(Pid, Callback) || {Pid, _, break, _} <- int:snapshot()],
     nil.
 
 on_attach(Pid, Callback) ->

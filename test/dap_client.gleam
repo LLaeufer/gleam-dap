@@ -158,8 +158,20 @@ pub fn scope_variables(
 }
 
 pub fn variables(client: Client, reference: Int) -> List(Variable) {
+  variables_with(client, reference, [])
+}
+
+/// A `variables` request with extra arguments, like `start` and `count`.
+pub fn variables_with(
+  client: Client,
+  reference: Int,
+  args: List(#(String, Json)),
+) -> List(Variable) {
   let response =
-    request(client, "variables", [#("variablesReference", json.JInt(reference))])
+    request(client, "variables", [
+      #("variablesReference", json.JInt(reference)),
+      ..args
+    ])
   get(
     response,
     ["body", "variables"],

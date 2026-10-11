@@ -18,6 +18,8 @@ pub type Config {
     /// Gleam module name of the entry point, e.g. `app/cli`.
     module: String,
     function: String,
+    /// Command-line arguments for the program.
+    args: List(String),
     env: List(#(String, String)),
     target: Target,
     interpret_dependencies: Bool,
@@ -51,6 +53,7 @@ pub fn decode_config(
     )
     use module <- decode.optional_field("module", "", decode.string)
     use function <- decode.optional_field("function", "main", decode.string)
+    use args <- decode.optional_field("args", [], decode.list(decode.string))
     use env <- decode.optional_field(
       "env",
       [],
@@ -100,6 +103,7 @@ pub fn decode_config(
       project_dir:,
       module:,
       function:,
+      args:,
       env:,
       target: case target {
         "test" -> Test
@@ -182,7 +186,10 @@ fn run_command(
 ) -> Result(#(Int, String), String)
 
 fn gleam_executable(config: Config) -> Result(String, String) {
-  case string.contains(config.gleam_path, "/") {
+  case
+    string.contains(config.gleam_path, "/")
+    || string.contains(config.gleam_path, "\\")
+  {
     True -> Ok(config.gleam_path)
     False ->
       find_executable(config.gleam_path)
@@ -308,6 +315,33 @@ pub fn modules_to_interpret(index: Index, config: Config) -> List(ModuleInfo) {
   |> list.filter(fn(module) {
     !loaded_elsewhere(module.module, index.project_dir)
   })
+}
+
+/// Whether a module that wasn't interpreted at launch may be when a
+/// breakpoint is set in it.
+pub fn can_interpret_later(
+  index: Index,
+  config: Config,
+  module: ModuleInfo,
+) -> Result(Nil, String) {
+  let name = names.module_to_gleam(module.module)
+  case
+    config.no_debug,
+    list.any(config.exclude_modules, glob.matches(_, name)),
+    loaded_elsewhere(module.module, index.project_dir)
+  {
+    True, _, _ -> Error("The program runs without debugging")
+    _, True, _ ->
+      Error(
+        name <> " is excluded by excludeModules in the launch configuration",
+      )
+    _, _, True ->
+      Error(
+        name
+        <> " is used by the debugger itself, so it can't be interpreted. Its code runs, but breakpoints in it don't stop.",
+      )
+    False, False, False -> Ok(Nil)
+  }
 }
 
 /// Interprets modules in parallel, on all connected nodes when

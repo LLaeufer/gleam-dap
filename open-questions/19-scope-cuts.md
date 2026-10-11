@@ -10,25 +10,10 @@ more than its value for a first version of a personal tool.
 
 ## The cuts
 
-### No `args` for the entry function
+### `args` and Windows (no longer cut)
 
-- The entry function is called with no arguments, like `gleam run` calls
-  `main`. Gleam programs read their arguments with `argv`-style packages
-  (which read `init:get_plain_arguments/0`), not through `main`'s
-  parameters.
-- **Alternative:** an `args` list passed to the function, or set as plain
-  arguments of the adapter's VM so `argv` sees them. The second is the
-  useful one, but plain arguments can't be changed after the VM started, so
-  it would need starting the program in a new VM (see
-  [09-packaging.md](09-packaging.md), option C).
-
-### No Windows support
-
-- The launcher is a shell script, the adapter talks DAP through a
-  `{fd, 0, 1}` port, and paths are handled as POSIX paths. None of this
-  has been tried on Windows.
-- **Alternative:** a `gleam-dap.cmd` launcher and path normalisation. Worth
-  doing once someone needs it and can test it.
+Both were cut from PR #4 and built in PR #5: see
+[22-program-args.md](22-program-args.md) and [25-windows.md](25-windows.md).
 
 ### The Gleam version check only runs when building
 
@@ -39,9 +24,9 @@ more than its value for a first version of a personal tool.
   themselves (for example the presence of Gleam-line annotations). Not
   reliable enough to build on without more investigation.
 
-### No paged variables
+### Paged variables (no longer cut)
 
-- See [17-value-rendering.md](17-value-rendering.md).
+- Built in PR #5, see [21-paging.md](21-paging.md).
 
 ### Not hooking `echo`
 

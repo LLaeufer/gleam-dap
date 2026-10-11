@@ -22,7 +22,7 @@ fn get_env(name: String) -> Result(String, Nil)
 fn read_file(path: String) -> Result(String, Nil)
 
 pub fn breakable_lines_test() {
-  let dir = dap_client.fixture()
+  let dir = project.absname(dap_client.fixture())
   let assert Ok(config) = launch.decode_config(dict_new(), dir)
   let assert Ok(_) = launch.build(config)
   let index = project.build_index(dir, "sample")

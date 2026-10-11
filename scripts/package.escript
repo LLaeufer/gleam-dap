@@ -2,6 +2,7 @@
 %% Builds a self-contained copy of the adapter in dist/gleam-dap:
 %%
 %%   dist/gleam-dap/bin/gleam-dap     launcher the editor runs
+%%   dist/gleam-dap/bin/gleam-dap.cmd the same, for Windows
 %%   dist/gleam-dap/ebin/*.beam       the adapter and its dependencies
 %%
 %% Dependencies (gleam_stdlib, gleam_erlang) are renamed with a
@@ -102,7 +103,13 @@ write_launchers(Out) ->
         "# Needs Erlang/OTP 27 or newer with the debugger application.\n"
         "DIR=\"$(cd \"$(dirname \"$0\")/..\" && pwd)\"\n"
         "exec erl -noinput -pa \"$DIR/ebin\" -eval 'gleam_dap:main()' -extra \"$@\"\n"),
-    ok = file:change_mode(Sh, 8#755).
+    ok = file:change_mode(Sh, 8#755),
+    Cmd = filename:join(Bin, "gleam-dap.cmd"),
+    ok = file:write_file(Cmd,
+        "@echo off\r\n"
+        "rem Starts the gleam-dap debug adapter on Windows. It speaks DAP on\r\n"
+        "rem stdin/stdout. Needs Erlang/OTP 27 or newer with the debugger application.\r\n"
+        "erl.exe -noinput -pa \"%~dp0..\\ebin\" -eval \"gleam_dap:main()\" -extra %*\r\n").
 
 del_dir(Dir) ->
     case filelib:is_dir(Dir) of

@@ -1,15 +1,18 @@
 %% Evaluating expressions in the debug console, watches, hovers, breakpoint
 %% conditions and logpoints.
 %%
-%% Expressions are Erlang expressions with a thin Gleam layer on top:
-%% Gleam variable names (`x` for the latest `X@N`), `True`/`False`/`Nil`,
-%% Gleam strings, `<>`, `!=`, `&&`, `||`, field access (`person.name`,
-%% `pair.0`) and module calls (`list.length(xs)`).
+%% Expressions are Gleam, read by `gleam_dap_gleam_eval`. What isn't Gleam
+%% falls back to Erlang expressions with a thin Gleam layer on top: Gleam
+%% variable names (`x` for the latest `X@N`), `True`/`False`/`Nil`, Gleam
+%% strings, `<>`, `!=`, `&&`, `||`, field access (`person.name`, `pair.0`)
+%% and module calls (`list.length(xs)`).
 -module(gleam_dap_eval_ffi).
 
 -export([
-    eval/2, set_labels/1, field/2,
-    set_conditions/2, check/2, interpolate/2, append/2,
+    eval/2, eval/3, set_labels/1, field/2, resolve_module/1, update_record/2,
+    divide_int/2, remainder_int/2, divide_float/2,
+    set_conditions/2, check/4, interpolate/2, append/2, set_remote/1,
+    unload_remote/0,
     set_step_targets/1, take_step_stop/1
 ]).
 
@@ -18,25 +21,61 @@
 %% ---------------------------------------------------------------------------
 %% Evaluate
 
-%% Bindings is [{ErlangName :: binary(), Value}].
-eval(Source, Bindings) ->
-    case gleam_dap_ffi:run_with_timeout(fun() -> eval_now(Source, Bindings) end,
+%% Bindings is [{ErlangName :: binary(), Value}]. Module is the module of
+%% the frame, for calls to its functions without a module.
+eval(Source, Bindings) -> eval(Source, Bindings, undefined).
+
+eval(Source, Bindings, <<>>) -> eval(Source, Bindings, undefined);
+eval(Source, Bindings, Module) ->
+    case gleam_dap_ffi:run_with_timeout(fun() -> eval_now(Source, Bindings, Module) end,
                                         ?EVAL_TIMEOUT) of
         {ok, Result} -> Result;
         {error, Reason} -> {error, Reason}
     end.
 
-eval_now(Source, Bindings) ->
+%% Gleam first. What doesn't parse as Gleam is tried as Erlang (with the
+%% Gleam conveniences below), so `erlang:length(xs)` or `X@1` still work.
+eval_now(Source, Bindings, Module) ->
+    case gleam_dap_gleam_eval:compile(Source, gleam_names(Bindings), Module) of
+        {ok, Forms} -> run(Forms, Bindings);
+        {error, GleamError} ->
+            case eval_erlang(Source, Bindings) of
+                {ok, Value} -> {ok, Value};
+                {error, _} -> {error, GleamError}
+            end
+    end.
+
+run(Forms, Bindings) ->
+    try
+        {value, Value, _} = erl_eval:exprs(Forms, new_bindings(Bindings), {value, fun local/2}),
+        {ok, Value}
+    catch
+        error:{unbound_var, Var} ->
+            {error, unicode:characters_to_binary(
+                       io_lib:format("Unknown variable ~ts", [gleam_name(Var)]))};
+        error:{badmatch, V} ->
+            {error, unicode:characters_to_binary(
+                       ["Pattern match failed, no pattern matched the value: ", render(V)])};
+        error:{case_clause, V} ->
+            {error, unicode:characters_to_binary(
+                       ["No case clause matched the value: ", render(V)])};
+        Class:Reason ->
+            {error, gleam_dap_ffi:format_term({Class, Reason}, 8)}
+    end.
+
+new_bindings(Bindings) ->
+    lists:foldl(fun({K, V}, Acc) ->
+                    erl_eval:add_binding(binary_to_atom(K, utf8), V, Acc)
+                end, erl_eval:new_bindings(), Bindings).
+
+eval_erlang(Source, Bindings) ->
     try
         Tokens = tokens(Source, Bindings),
         {ok, Exprs} = case erl_parse:parse_exprs(Tokens) of
             {ok, Parsed} -> {ok, concat_ops(Parsed)};
             {error, {_, Mod, Desc}} -> throw({syntax, Mod:format_error(Desc)})
         end,
-        Bs = lists:foldl(fun({K, V}, Acc) ->
-                             erl_eval:add_binding(binary_to_atom(K, utf8), V, Acc)
-                         end, erl_eval:new_bindings(), Bindings),
-        {value, Value, _} = erl_eval:exprs(Exprs, Bs, {value, fun local/2}),
+        {value, Value, _} = erl_eval:exprs(Exprs, new_bindings(Bindings), {value, fun local/2}),
         {ok, Value}
     catch
         throw:{unknown_variable, Name} ->
@@ -95,6 +134,33 @@ concat_ops(Other) -> Other.
 
 append(A, B) when is_binary(A), is_binary(B) -> <<A/binary, B/binary>>;
 append(A, B) -> A ++ B.
+
+%% Gleam's division: by zero gives zero.
+divide_int(_, 0) -> 0;
+divide_int(A, B) -> A div B.
+
+remainder_int(_, 0) -> 0;
+remainder_int(A, B) -> A rem B.
+
+divide_float(_, B) when B == 0 -> 0.0;
+divide_float(A, B) -> A / B.
+
+%% `Name(..record, label: value)`.
+update_record(Record, Updates) when is_tuple(Record), tuple_size(Record) > 1 ->
+    Tag = atom_to_binary(element(1, Record), utf8),
+    Labels = persistent_term:get(gleam_dap_labels, #{}),
+    case maps:get({Tag, tuple_size(Record) - 1}, Labels, undefined) of
+        undefined -> erlang:error({unknown_fields, element(1, Record)});
+        {_, Fields} ->
+            lists:foldl(fun({Label, Value}, Acc) ->
+                case index_of(atom_to_binary(Label, utf8), Fields, 1) of
+                    0 -> erlang:error({unknown_field, Label});
+                    I -> setelement(I + 1, Acc, Value)
+                end
+            end, Record, Updates)
+    end;
+update_record(Value, _) ->
+    erlang:error({not_a_record, Value}).
 
 string_literal([$\\, C | Rest], Acc) -> string_literal(Rest, [C, $\\ | Acc]);
 string_literal([$" | Rest], Acc) -> {lists:reverse([$" | Acc]), Rest};
@@ -261,45 +327,106 @@ ensure_table(Name) ->
         _ -> Name
     end.
 
+%% The conditions run in the interpreter's meta processes, which live on
+%% the node of the process being debugged. When attached to another node,
+%% the generated module is loaded there too and calls back to the adapter,
+%% where the tables and the evaluator are.
+set_remote(Remote) ->
+    persistent_term:put(gleam_dap_condition_remote, Remote),
+    nil.
+
 ensure_module(Slots) ->
-    Current = persistent_term:get(gleam_dap_condition_slots, 0),
-    case Slots =< Current of
+    Remote = persistent_term:get(gleam_dap_condition_remote, false),
+    {Current, CurrentRemote} = persistent_term:get(gleam_dap_condition_slots, {0, false}),
+    case Slots =< Current andalso Remote =:= CurrentRemote of
         true -> ok;
         false ->
             Size = ((Slots div 32) + 1) * 32,
             Mod = gleam_dap_conditions,
-            Forms = [{attribute, 1, module, Mod},
-                     {attribute, 1, export, [{check_name(N), 1} || N <- lists:seq(1, Size)]}
-                     | [check_form(N) || N <- lists:seq(1, Size)]],
-            {ok, Mod, Bin} = compile:forms(Forms, [binary]),
+            {ok, Mod, Bin} = compile:forms(condition_forms(Size, Remote), [binary]),
+            File = "gleam_dap_conditions.erl",
             code:purge(Mod),
-            {module, Mod} = code:load_binary(Mod, "gleam_dap_conditions.erl", Bin),
-            persistent_term:put(gleam_dap_condition_slots, Size)
+            {module, Mod} = code:load_binary(Mod, File, Bin),
+            case Remote of
+                true ->
+                    %% Only MFAs: a fun would need this module over there.
+                    [begin
+                         catch erpc:call(N, code, purge, [Mod], 5000),
+                         catch erpc:call(N, code, load_binary, [Mod, File, Bin], 5000)
+                     end || N <- nodes()];
+                false -> ok
+            end,
+            persistent_term:put(gleam_dap_condition_slots, {Size, Remote})
     end.
 
-check_name(N) -> list_to_atom("check_" ++ integer_to_list(N)).
+%% Removes the generated module from the attached nodes, when detaching.
+unload_remote() ->
+    case persistent_term:get(gleam_dap_condition_remote, false) of
+        true ->
+            [[catch erpc:call(N, code, F, [gleam_dap_conditions], 5000)
+              || F <- [purge, delete, purge]]
+             || N <- nodes()];
+        false -> ok
+    end,
+    nil.
 
-check_form(N) ->
-    {function, 1, check_name(N), 1,
-     [{clause, 1, [{var, 1, 'Bs'}], [],
-       [{call, 1, {remote, 1, {atom, 1, ?MODULE}, {atom, 1, check}},
-         [{integer, 1, N}, {var, 1, 'Bs'}]}]}]}.
+%% check_1/1 .. check_Size/1, each calling check/4 with its slot, the
+%% debugged process and its call level, read where the condition runs.
+condition_forms(Size, Remote) ->
+    Call = case Remote of
+        false ->
+            "gleam_dap_eval_ffi:check(N, Bs, get(self), level())";
+        true ->
+            io_lib:format("try erpc:call(~p, gleam_dap_eval_ffi, check, "
+                          "[N, Bs, get(self), level()], 30000) "
+                          "catch _:_ -> false end", [node()])
+    end,
+    Checks = [io_lib:format("check_~b(Bs) -> call(~b, Bs).~n", [N, N])
+              || N <- lists:seq(1, Size)],
+    Exports = lists:join(",", [io_lib:format("check_~b/1", [N]) || N <- lists:seq(1, Size)]),
+    Text = lists:flatten([
+        "-module(gleam_dap_conditions).\n",
+        "-export([", Exports, "]).\n",
+        Checks,
+        "call(N, Bs) -> ", Call, ".\n",
+        %% The call level as `int:meta(Meta, backtrace, _)` reports it: one
+        %% deeper than the top of the interpreter's call stack.
+        "level() -> try dbg_istk:stack_level() + 1 catch _:_ -> 0 end.\n"]),
+    parse_forms(Text).
 
-%% Runs inside the interpreter (in the meta process of the process that
-%% reached the line), so it must be quick and must never call into
-%% interpreted code.
-check(Slot, Bs) ->
+parse_forms(Text) ->
+    case erl_scan:tokens([], Text, 1) of
+        {done, {ok, Tokens, End}, Rest} ->
+            {ok, Form} = erl_parse:parse_form(Tokens),
+            [Form | parse_forms_from(Rest, End)];
+        _ -> []
+    end.
+
+parse_forms_from(eof, _) -> [];
+parse_forms_from(Rest, Line) ->
+    case erl_scan:tokens([], Rest, Line) of
+        {done, {ok, Tokens, End}, More} ->
+            {ok, Form} = erl_parse:parse_form(Tokens),
+            [Form | parse_forms_from(More, End)];
+        _ -> []
+    end.
+
+%% Called from the generated module, inside the interpreter (or, when
+%% attached, from it over distribution). Must be quick and must never call
+%% into interpreted code.
+check(Slot, Bs, Pid, Level) ->
     case ets:lookup(gleam_dap_conditions, Slot) of
         [{Slot, Module, Line, User, _}] ->
-            step_target(Module, Line) orelse user_holds(Slot, User, Bs);
+            step_target(Module, Line, Pid, Level)
+                orelse user_holds(Slot, User, Bs, atom_to_binary(Module, utf8));
         [] -> false
     end.
 
-user_holds(_, no_user, _) -> false;
-user_holds(_, plain, _) -> true;
-user_holds(Slot, {conditional, Condition, Hit, Log}, Bs) ->
+user_holds(_, no_user, _, _) -> false;
+user_holds(_, plain, _, _) -> true;
+user_holds(Slot, {conditional, Condition, Hit, Log}, Bs, Module) ->
     Bindings = [{atom_to_binary(K, utf8), V} || {K, V} <- erl_eval:bindings(Bs)],
-    case condition_holds(Condition, Bindings) of
+    case condition_holds(Condition, Bindings, Module) of
         false -> false;
         true ->
             Hits = ets:update_counter(gleam_dap_conditions, Slot, {5, 1}),
@@ -310,7 +437,7 @@ user_holds(Slot, {conditional, Condition, Hit, Log}, Bs) ->
                         none -> true;
                         Message ->
                             {OnLog, _} = callbacks(),
-                            OnLog(interpolate(Message, Bindings)),
+                            OnLog(interpolate(Message, Bindings, Module)),
                             false
                     end
             end
@@ -344,15 +471,15 @@ take_step_stop(Pid) ->
         _ -> ets:take(gleam_dap_step_stops, Pid) =/= []
     end.
 
-step_target(Module, Line) ->
+%% Pid is the process that reached the line (the interpreter keeps it in
+%% `self`) and Level its call level.
+step_target(Module, Line, Pid, Level) ->
     case ets:info(gleam_dap_step_targets) of
         undefined -> false;
         _ ->
-            %% The interpreter keeps the process it runs for in `self`.
-            Pid = get(self),
             case ets:lookup(gleam_dap_step_targets, {Pid, Module, Line}) of
                 [{_, Max, Any}] ->
-                    case Any orelse current_level() =< Max of
+                    case Any orelse Level =< Max of
                         true ->
                             ets:insert(gleam_dap_step_stops, {Pid}),
                             true;
@@ -362,20 +489,13 @@ step_target(Module, Line) ->
             end
     end.
 
-%% The call level of the code being run, as `int:meta(Meta, backtrace, _)`
-%% reports it: one deeper than the top of the interpreter's call stack.
-current_level() ->
-    try dbg_istk:stack_level() + 1
-    catch _:_ -> 0
-    end.
-
 callbacks() ->
     persistent_term:get(gleam_dap_condition_callbacks,
                         {fun(_) -> nil end, fun(_) -> nil end}).
 
-condition_holds(none, _) -> true;
-condition_holds(Condition, Bindings) ->
-    case eval_now(Condition, Bindings) of
+condition_holds(none, _, _) -> true;
+condition_holds(Condition, Bindings, Module) ->
+    case eval_now(Condition, Bindings, Module) of
         {ok, true} -> true;
         {ok, _} -> false;
         {error, Message} ->
@@ -407,22 +527,24 @@ hit_holds(Hit, Hits) ->
     end.
 
 %% Replaces `{expression}` in a logpoint message with its value.
-interpolate(Message, Bindings) ->
-    iolist_to_binary(interpolate_parts(Message, Bindings)).
+interpolate(Message, Bindings) -> interpolate(Message, Bindings, undefined).
 
-interpolate_parts(<<"{", Rest/binary>>, Bindings) ->
+interpolate(Message, Bindings, Module) ->
+    iolist_to_binary(interpolate_parts(Message, Bindings, Module)).
+
+interpolate_parts(<<"{", Rest/binary>>, Bindings, Module) ->
     case binary:split(Rest, <<"}">>) of
         [Expr, After] ->
-            Value = case eval_now(Expr, Bindings) of
+            Value = case eval_now(Expr, Bindings, Module) of
                 {ok, V} -> render(V);
                 {error, E} -> [<<"<error: ">>, E, <<">">>]
             end,
-            [Value | interpolate_parts(After, Bindings)];
+            [Value | interpolate_parts(After, Bindings, Module)];
         [_] -> [<<"{">>, Rest]
     end;
-interpolate_parts(<<C/utf8, Rest/binary>>, Bindings) ->
-    [<<C/utf8>> | interpolate_parts(Rest, Bindings)];
-interpolate_parts(<<>>, _) -> [].
+interpolate_parts(<<C/utf8, Rest/binary>>, Bindings, Module) ->
+    [<<C/utf8>> | interpolate_parts(Rest, Bindings, Module)];
+interpolate_parts(<<>>, _, _) -> [].
 
 render(Value) ->
     Labels = persistent_term:get(gleam_dap_labels, #{}),

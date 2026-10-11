@@ -17,8 +17,12 @@ so it works in VS Code and in IntelliJ through
 - Variables with their Gleam names (`x`, not `X@1`) and Gleam-looking values:
   `Person(name: "Ada", age: 36)`, `Some(1)`, `dict.from_list([...])`.
 - Stops on `panic`, `todo` and failed `let assert` with the error message.
-- A debug console that evaluates expressions over the current variables.
+- A debug console that evaluates Gleam expressions over the current
+  variables, including pipes, `case` and anonymous functions.
+- Large lists, maps and tuples open in pages of 100.
+- Breakpoints in dependencies interpret them on the spot.
 - Attach to a running node, and `debug.break()` to stop from code.
+- Command-line arguments for the program.
 
 This is a personal tool, written in Gleam on top of Erlang's `int`
 interpreter. [PLAN.md](PLAN.md) explains the design and
@@ -32,8 +36,9 @@ it.
 - **Erlang/OTP 27 or newer** with the `debugger` application. Most
   installations include it; on Debian and Ubuntu it is the `erlang-debugger`
   package (or use `erlang` or `erlang-nox`, which pull it in).
-- Linux or macOS. Windows isn't supported yet (the launcher is a shell
-  script and the adapter hasn't been tried there).
+- Linux, macOS or Windows. On Windows, use the `bin\gleam-dap.cmd`
+  launcher. Windows support is new and only checked by the Windows CI job,
+  so it has had less use than the other two.
 
 ## Building the adapter
 
@@ -44,8 +49,8 @@ escript scripts/package.escript
 ```
 
 This leaves a self-contained adapter in `dist/gleam-dap`. The editor runs
-`dist/gleam-dap/bin/gleam-dap`, which starts `erl` and talks DAP on stdin and
-stdout. The adapter's own copies of `gleam_stdlib` and `gleam_erlang` are
+`dist/gleam-dap/bin/gleam-dap` (`gleam-dap.cmd` on Windows), which starts
+`erl` and talks DAP on stdin and stdout. The adapter's own copies of `gleam_stdlib` and `gleam_erlang` are
 renamed inside the package, so they never clash with the versions your
 program uses.
 
@@ -96,7 +101,8 @@ server, install the official Gleam extension as well.
    **Import from custom template...**. Pick the
    [`editors/intellij/gleam-dap`](editors/intellij/gleam-dap) folder of this
    repository.
-3. Change the command to the full path of your `dist/gleam-dap/bin/gleam-dap`.
+3. Change the command to the full path of your `dist/gleam-dap/bin/gleam-dap`
+   (`gleam-dap.cmd` on Windows).
 4. On the **Configuration** tab, keep the debug mode on **Launch** and pick
    one of the configurations: debug the project, debug its tests, or attach
    to a node. The JSON is the same as for VS Code; `${workspaceFolder}` is
@@ -123,8 +129,9 @@ code fixtures/sample      # or open it in IntelliJ
    names the compiler gave them.
 2. Step over (F10) to the next line and `greeting` appears. Step into
    `shapes.birthday(person)` a few lines down and step out again.
-3. In the debug console, try `x + 1`, `greeting <> "?"` or `flow.double(x)`.
-   Once `person` exists, `person.name` reads a field by its label.
+3. In the debug console, try `x + 1`, `greeting <> "?"`, `flow.double(x)` or
+   `greet("Bob")`. Once `person` exists, `person.name` reads a field by its
+   label and `Person(..person, age: 40)` makes a changed copy.
 4. Right-click a breakpoint to add a condition such as `n > 2`, a hit count
    such as `3` or a log message such as `n is {n}`.
 5. Set the entry function to a crashing one (`"function": "crash_main"`) to
@@ -138,6 +145,7 @@ code fixtures/sample      # or open it in IntelliJ
 | `projectDir` | the workspace | The Gleam project to debug, the folder with `gleam.toml`. |
 | `module` | the project's main module | Gleam module with the entry function, such as `app/cli`. |
 | `function` | `main` | Entry function, called with no arguments. |
+| `args` | `[]` | Command-line arguments for the program, as `argv.load()` (or `init:get_plain_arguments()`) reads them. |
 | `target` | `dev` | `test` runs every `*_test` module of the project with EUnit instead, the way gleeunit does. With `module` set, it calls that module's `function` instead. |
 | `env` | `{}` | Environment variables set before the program starts. |
 | `stopOnEntry` | `false` | Stop at the first line of the entry function. |
@@ -152,8 +160,15 @@ code fixtures/sample      # or open it in IntelliJ
 | `cookie` | `~/.erlang.cookie` | The node's cookie, for attaching. |
 
 Only the modules the debugger interprets can have breakpoints. The project's
-own modules always are; a breakpoint in a dependency that isn't interpreted
-says so and names the option to change.
+own modules always are. Setting a breakpoint in another module, such as a
+dependency, interprets that module there and then, as ElixirLS does. Modules
+in `excludeModules` are refused, and so are modules the adapter runs itself
+(when it runs from a source checkout rather than a packaged build, that
+includes `gleam_stdlib`); the breakpoint says why.
+
+Arguments can only be given to a VM when it starts, so a launch with `args`
+starts a second adapter VM with them and passes everything through to it.
+Debugging works the same; starting takes a moment longer.
 
 ## Attaching to a running node
 
@@ -178,7 +193,9 @@ and attach with:
 ```
 
 The node needs the `debugger` application installed, as the adapter loads
-the interpreted modules on it. `build: false` keeps the adapter from
+the interpreted modules on it. Conditions, logpoints and stepping work as in
+a launch: the adapter loads a small module on the node that calls back to
+it to check them. `build: false` keeps the adapter from
 rebuilding the project under the running node; the adapter still reads the
 BEAM files in `projectDir` to find the modules. Disconnecting leaves the node running and
 puts its modules back to normal; "Terminate" stops it.
@@ -207,20 +224,30 @@ pub fn main() {
 
 ## The debug console, conditions and logpoints
 
-Expressions are Erlang expressions with a Gleam layer on top, which covers
-what you usually type:
+Expressions are Gleam:
 
-- Variables by their Gleam names: `x`, `greeting`.
-- Field access by label or position: `person.name`, `pair.0`, chained as
-  `order.customer.name`.
-- Gleam calls: `string.length(name)`, `list.length(items)` (module names
-  are resolved to the loaded Gleam module), and Erlang calls such as
-  `erlang:length(items)`.
-- `True`, `False`, `Nil`, string literals as Gleam strings, `<>`, `==`, `!=`,
-  `&&`, `||` and the arithmetic operators.
+- Variables by their Gleam names (`x`, `greeting`), and field access by
+  label or position: `person.name`, `pair.0`, `order.customer.name`.
+- Literals: numbers (`1_000`, `0xff`, `1.5e3`), strings with escapes, lists
+  (`[1, ..rest]`), tuples (`#(a, b)`), bit arrays (`<<1, x:size(16)>>`).
+- Records by constructor, with or without labels (`Person(name: "Ada",
+  age: 36)`, `Some(1)`, `option.None`), and record updates
+  (`Person(..person, age: 37)`).
+- Every operator with Gleam's precedence and meaning: `/` and `%` on ints
+  give 0 for a zero divisor, `+.`, `<.` and friends for floats, `<>`, `==`,
+  `!=`, `&&`, `||`, `!`.
+- Calls: `list.length(items)` (module names are resolved to the loaded Gleam
+  module), functions of the stopped frame's module without a module name
+  (`greet("Bob")`), and functions held in variables. Pipes, also with a `_`
+  capture: `items |> list.map(double)`, `x |> int.add(1, _)`.
+- `fn(x) { x * 2 }`, blocks `{ ... }`, `let` and `let assert`, and `case`
+  with alternatives, guards, string prefixes and `as`.
 
-Anything else is evaluated as Erlang, so Gleam-only syntax such as pipes,
-`case` or anonymous `fn` doesn't work. Results are shown as Gleam values.
+There is no type checker: a wrong expression fails when it runs, with the
+runtime error. Labelled arguments only work for record constructors, since
+function labels aren't kept in compiled code; pass function arguments in
+order. Input that isn't Gleam is tried as Erlang, so `erlang:length(items)`
+and raw names like `X@1` still work. Results are shown as Gleam values.
 
 Breakpoint conditions use the same syntax and must evaluate to `True`. Hit
 counts accept `3` (from the third hit on), `>= 3`, `== 3`, `> 3`, `< 3`,
@@ -239,20 +266,19 @@ crashes** also stops on Erlang errors such as `badarg`.
 
 - Interpreted code runs much slower than compiled code. Only the project's
   own modules are interpreted by default.
-- When attaching to a node, or with `stackTraceMode: "false"`, step over and
-  step out use the interpreter's own commands, which run through breakpoints
-  inside the calls they step over. Continue (F5) to reach those instead.
+- With `stackTraceMode: "false"`, step over and step out use the
+  interpreter's own commands, which run through breakpoints inside the calls
+  they step over. Continue (F5) to reach those instead.
 - Step out lands on the caller's next statement, not on the call that
   returned, because the interpreter only stops at statements.
 - With `stackTraceMode: "all"`, long-running loops keep every tail call on
   the stack and use more and more memory. Use `"no_tail"` for those.
-- Values show at most 100 items, also when expanded; reach the rest from the
-  debug console.
-- Entry functions are called without arguments; there is no `args` option.
-- Gleam-only expression syntax (pipes, `case`, `fn`) doesn't work in the
-  debug console.
+- The debug console doesn't check types, doesn't support `use`, and takes
+  function arguments in order only (see above).
+- When attached, conditions and logpoints evaluate on the adapter's node:
+  a condition that calls a function runs the adapter's copy of it.
 - The JavaScript target and Gleam versions before 1.19 aren't supported.
-- Windows isn't supported.
+- Windows is only tested by CI, which runs on request (see Development).
 - VS Code is tested through code-server; IntelliJ hasn't been tried yet.
 
 ## Development
@@ -278,7 +304,10 @@ GLEAM_DAP_COMMAND="$PWD/dist/gleam-dap/bin/gleam-dap" gleam test   # end-to-end 
 - `scripts/offline-deps.sh` fetches the dependencies from GitHub into
   `build/packages`, for sandboxes that can't reach Hex.
 - CI (`.github/workflows/ci.yml`) runs the tests on OTP 27 and 28, again
-  against the packaged adapter, and builds the VS Code extension.
+  against the packaged adapter, and builds the VS Code extension. **CI is
+  disabled by default**: pushes and pull requests don't start it. It runs
+  only on request, from the Actions tab ("CI" → "Run workflow", pick the
+  branch) or with `gh workflow run ci.yml --ref <branch>`.
 
 ### How it works
 

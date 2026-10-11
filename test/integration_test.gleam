@@ -238,6 +238,96 @@ pub fn values_look_like_gleam_test() {
       #("frameId", JInt(frame.id)),
     ])
   assert get(response, ["body", "result"], decode.string) == "38"
+
+  // Gleam expressions: calls into the frame's module without a module
+  // name, other modules, record updates and case.
+  let evaluate = fn(expression) {
+    let response =
+      request(client, "evaluate", [
+        #("expression", JString(expression)),
+        #("frameId", JInt(frame.id)),
+      ])
+    get(response, ["body", "result"], decode.string)
+  }
+  assert evaluate("greet(\"Bob\")") == "\"Hello, Bob!\""
+  assert evaluate("shapes.birthday(person).age") == "37"
+  assert evaluate("Person(..person, name: \"Grace\")")
+    == "Person(name: \"Grace\", age: 36)"
+  assert evaluate("case person { Person(age:, ..) if age > 30 -> age _ -> 0 }")
+    == "36"
+  finish(client)
+}
+
+pub fn large_values_are_paged_test() {
+  let client = launch([#("function", JString("big_main"))])
+  let _ =
+    request(client, "setBreakpoints", [
+      #("source", source("sample.gleam")),
+      #("breakpoints", breakpoints([71])),
+    ])
+  let _ = request(client, "configurationDone", [])
+  let #(_, _, frames) = wait_stop(client)
+  let assert [frame, ..] = frames
+  let response =
+    request(client, "evaluate", [
+      #("expression", JString("numbers")),
+      #("frameId", JInt(frame.id)),
+    ])
+  assert get(response, ["body", "indexedVariables"], decode.int) == 250
+  let reference = get(response, ["body", "variablesReference"], decode.int)
+
+  // Clients that page (VS Code) ask for parts.
+  assert dap_client.variables_with(client, reference, [
+      #("filter", JString("indexed")),
+      #("start", JInt(120)),
+      #("count", JInt(3)),
+    ])
+    |> values
+    == [#("120", "120"), #("121", "121"), #("122", "122")]
+  assert dap_client.variables_with(client, reference, [
+      #("filter", JString("named")),
+    ])
+    == []
+
+  // Clients that don't (LSP4IJ) get groups to expand.
+  let groups = dap_client.variables(client, reference)
+  assert list.map(groups, fn(v) { v.name })
+    == ["[0..99]", "[100..199]", "[200..249]"]
+  let assert [_, _, last] = groups
+  let items = dap_client.variables(client, last.reference)
+  assert list.length(items) == 50
+  assert list.first(values(items)) == Ok(#("200", "200"))
+  assert list.last(values(items)) == Ok(#("249", "249"))
+  // Paging inside a group counts from the group's start.
+  assert dap_client.variables_with(client, last.reference, [
+      #("start", JInt(10)),
+      #("count", JInt(2)),
+    ])
+    |> values
+    == [#("210", "210"), #("211", "211")]
+  finish(client)
+}
+
+pub fn program_arguments_test() {
+  let client =
+    launch([
+      #("function", JString("args_main")),
+      #("args", JArray([JString("one"), JString("two words")])),
+    ])
+  let _ =
+    request(client, "setBreakpoints", [
+      #("source", source("sample.gleam")),
+      #("breakpoints", breakpoints([90])),
+    ])
+  let _ = request(client, "configurationDone", [])
+  let #(thread, reason, frames) = wait_stop(client)
+  assert reason == "breakpoint"
+  let assert [frame, ..] = frames
+  assert values(scope_variables(client, frame.id, "Locals"))
+    == [#("args", "\"one|two words\"")]
+  let _ = request(client, "continue", thread_arg(thread))
+  assert wait_until_output(client, "one") == "one|two words\n"
+  let _ = wait_event(client, "terminated")
   finish(client)
 }
 
@@ -483,6 +573,58 @@ pub fn program_with_dependencies_test() {
   finish(client)
 }
 
+/// A breakpoint in a dependency interprets it, without interpretModules.
+pub fn interpret_on_demand_test() {
+  let client =
+    dap_client.launch_project(
+      dap_client.project_root() <> "/fixtures/with_deps",
+      [],
+    )
+  let response =
+    request(client, "setFunctionBreakpoints", [
+      #(
+        "breakpoints",
+        JArray([JObject([#("name", JString("gleam/list.fold"))])]),
+      ),
+    ])
+  let assert [#(verified, message)] =
+    get(
+      response,
+      ["body", "breakpoints"],
+      decode.list({
+        use verified <- decode.field("verified", decode.bool)
+        use message <- decode.optional_field("message", "", decode.string)
+        decode.success(#(verified, message))
+      }),
+    )
+  let packaged = get_env("GLEAM_DAP_COMMAND") |> result_is_ok
+  assert verified == packaged
+  let _ = request(client, "configurationDone", [])
+  case packaged {
+    // The packaged adapter has its own renamed gleam_stdlib, so the
+    // program's copy is free to interpret.
+    True -> {
+      let #(thread, _, frames) = wait_stop(client)
+      let assert [frame, ..] = frames
+      assert frame.name == "gleam/list.fold"
+      // `fold` calls itself, so clear the breakpoint before going on.
+      let _ =
+        request(client, "setFunctionBreakpoints", [
+          #("breakpoints", JArray([])),
+        ])
+      let _ = request(client, "continue", thread_arg(thread))
+      Nil
+    }
+    // Run from the source tree, the adapter uses that gleam_stdlib itself.
+    False -> {
+      assert string.contains(message, "used by the debugger itself")
+      Nil
+    }
+  }
+  let _ = wait_event(client, "terminated")
+  finish(client)
+}
+
 fn result_is_ok(r: Result(a, b)) -> Bool {
   case r {
     Ok(_) -> True
@@ -544,6 +686,60 @@ fn attach_with(command: String) {
   let _ = request(client, "disconnect", [#("terminateDebuggee", JBool(False))])
   dap_client.stop(client)
   // Detaching leaves nothing interpreted on the node.
+  assert stop_target(node, cookie) == dynamic.list([])
+}
+
+@external(erlang, "test_ffi", "run_on_target")
+fn run_on_target(node: String, cookie: String) -> Nil
+
+/// Conditions, logpoints and stepping over calls with breakpoints inside
+/// work on an attached node too.
+pub fn attach_conditions_and_stepping_test() {
+  let cookie = "gleam_dap_test"
+  let node = start_target(cookie)
+  let client = dap_client.start_and_initialize()
+  let response =
+    request(client, "attach", [
+      #("projectDir", JString(dap_client.fixture())),
+      #("node", JString(node)),
+      #("cookie", JString(cookie)),
+    ])
+  assert dap_client.success(response)
+  let _ = wait_event(client, "initialized")
+  let _ =
+    request(client, "setBreakpoints", [
+      #("source", source("sample.gleam")),
+      #(
+        "breakpoints",
+        JArray([
+          JObject([#("line", JInt(10))]),
+          JObject([
+            #("line", JInt(26)),
+            #("logMessage", JString("greeting {name}")),
+          ]),
+          JObject([
+            #("line", JInt(27)),
+            #("condition", JString("name == \"Ada\"")),
+          ]),
+        ]),
+      ),
+    ])
+  let _ = request(client, "configurationDone", [])
+  run_on_target(node, cookie)
+  let #(thread, _, frames) = wait_stop(client)
+  assert top(frames) == #("sample.main", 10)
+  let _ = request(client, "next", thread_arg(thread))
+  // The logpoint on the way logs before the step stops.
+  assert wait_until_output(client, "greeting") == "greeting \"Ada\"\n"
+  let #(_, reason, frames) = wait_stop(client)
+  assert reason == "breakpoint"
+  assert top(frames) == #("sample.greet", 27)
+  let _ = request(client, "next", thread_arg(thread))
+  let #(_, reason, frames) = wait_stop(client)
+  assert reason == "step"
+  assert top(frames) == #("sample.main", 11)
+  let _ = request(client, "disconnect", [#("terminateDebuggee", JBool(False))])
+  dap_client.stop(client)
   assert stop_target(node, cookie) == dynamic.list([])
 }
 

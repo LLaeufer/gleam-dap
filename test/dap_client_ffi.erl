@@ -23,7 +23,12 @@ init(Owner) ->
         false ->
             {os:find_executable("erl"),
              ["-noinput", "-pa" | Ebins] ++ ["-eval", "gleam_dap:main()"]};
-        Command -> {Command, []}
+        Command ->
+            %% Windows runs a .cmd launcher through cmd.exe.
+            case filename:extension(Command) of
+                ".cmd" -> {os:find_executable("cmd"), ["/c", Command]};
+                _ -> {Command, []}
+            end
     end,
     Port = open_port({spawn_executable, Exe},
                      [{args, Args},
