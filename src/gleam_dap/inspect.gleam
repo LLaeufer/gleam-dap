@@ -43,7 +43,17 @@ pub type Ref {
   FrameRef(pid: Pid, frame: FrameData)
   ScopeRef(pid: Pid, frame: FrameData, kind: ScopeKind)
   ValueRef(pid: Pid, value: Dynamic)
+  /// A slice of a large list, map or tuple: `count` children from `start`.
+  RangeRef(pid: Pid, value: Dynamic, start: Int, count: Int)
 }
+
+/// Which children a `variables` request asks for: DAP's `start`, `count`
+/// and `filter`.
+pub type Page {
+  Page(start: Option(Int), count: Option(Int), filter: Option(String))
+}
+
+pub const all_children = Page(None, None, None)
 
 @external(erlang, "gleam_dap_ffi", "refs_put")
 fn refs_put(ref: Ref) -> Int
@@ -250,7 +260,11 @@ pub fn frame_bindings(
   }
 }
 
-pub fn variables_body(ctx: Context, reference: Int) -> Result(Json, String) {
+pub fn variables_body(
+  ctx: Context,
+  reference: Int,
+  page: Page,
+) -> Result(Json, String) {
   case refs_get(reference) {
     Ok(ScopeRef(pid, frame, kind)) -> {
       use bindings <- result.try(frame_bindings(frame))
@@ -267,14 +281,97 @@ pub fn variables_body(ctx: Context, reference: Int) -> Result(Json, String) {
       )
     }
     Ok(ValueRef(pid, term)) ->
-      Ok(variables_json(
-        value.children(term, ctx.options)
-        |> list.map(fn(child) {
-          variable_json(ctx, pid, child.name, child.value, None)
-        }),
-      ))
+      case value.paged_size(term) {
+        Ok(size) if size > ctx.options.max_items ->
+          Ok(variables_json(slice(ctx, pid, term, 0, size, page)))
+        _ ->
+          Ok(variables_json(
+            value.children(term, ctx.options)
+            |> list.map(fn(child) {
+              variable_json(ctx, pid, child.name, child.value, None)
+            }),
+          ))
+      }
+    Ok(RangeRef(pid, term, start, count)) ->
+      Ok(variables_json(slice(ctx, pid, term, start, count, page)))
     _ -> Error("Unknown variables reference")
   }
+}
+
+/// The children `start` to `start + count` of a large value. A client that
+/// pages (VS Code) asks for parts of it with `start` and `count`; one that
+/// doesn't (LSP4IJ) gets groups of at most 100 children to expand.
+fn slice(
+  ctx: Context,
+  pid: Pid,
+  term: Dynamic,
+  start: Int,
+  count: Int,
+  page: Page,
+) -> List(Json) {
+  let child_json = fn(child: value.Child) {
+    variable_json(ctx, pid, child.name, child.value, None)
+  }
+  case page {
+    // Large values only have indexed children.
+    Page(filter: Some("named"), ..) -> []
+    Page(start: Some(_), ..) | Page(count: Some(_), ..) -> {
+      let offset = option.unwrap(page.start, 0) |> int.clamp(0, count)
+      let wanted = case page.count {
+        Some(n) if n > 0 -> int.min(n, count - offset)
+        _ -> count - offset
+      }
+      value.children_page(term, ctx.options, start + offset, wanted)
+      |> list.map(child_json)
+    }
+    _ ->
+      case count > ctx.options.max_items {
+        False ->
+          value.children_page(term, ctx.options, start, count)
+          |> list.map(child_json)
+        True -> {
+          let size = group_size(count, ctx.options.max_items)
+          int.range(0, { count - 1 } / size + 1, [], list.prepend)
+          |> list.reverse
+          |> list.map(fn(i) {
+            let from = start + i * size
+            let length = int.min(size, start + count - from)
+            range_json(pid, term, from, length)
+          })
+        }
+      }
+  }
+}
+
+/// The smallest power of `per_group` that splits `count` children into at
+/// most `per_group` groups.
+fn group_size(count: Int, per_group: Int) -> Int {
+  do_group_size(count, per_group, per_group)
+}
+
+fn do_group_size(count: Int, per_group: Int, size: Int) -> Int {
+  case count <= size * per_group {
+    True -> size
+    False -> do_group_size(count, per_group, size * per_group)
+  }
+}
+
+fn range_json(pid: Pid, term: Dynamic, start: Int, count: Int) -> Json {
+  JObject([
+    #(
+      "name",
+      JString(
+        "["
+        <> int.to_string(start)
+        <> ".."
+        <> int.to_string(start + count - 1)
+        <> "]",
+      ),
+    ),
+    #("value", JString("")),
+    #("variablesReference", JInt(refs_put(RangeRef(pid, term, start, count)))),
+    #("indexedVariables", JInt(count)),
+  ])
 }
 
 fn variables_json(variables: List(Json)) -> Json {
@@ -293,8 +390,18 @@ pub fn variable_json(
     #("value", json.string(value.render(term, ctx.options))),
     #("type", json.string(value.type_name(term, ctx.options))),
     #("variablesReference", json.int(child_reference(pid, term))),
+    #("indexedVariables", indexed_variables(ctx, term)),
     #("evaluateName", json.optional_string(evaluate_name)),
   ])
+}
+
+/// DAP's `indexedVariables` for values too large to show at once, which
+/// makes clients that page ask for their children in parts.
+pub fn indexed_variables(ctx: Context, term: Dynamic) -> Option(Json) {
+  case value.paged_size(term) {
+    Ok(size) if size > ctx.options.max_items -> json.int(size)
+    _ -> None
+  }
 }
 
 pub fn child_reference(pid: Pid, term: Dynamic) -> Int {
@@ -338,10 +445,11 @@ pub fn evaluate_body(
     None -> process.self()
   }
   Ok(
-    JObject([
-      #("result", JString(value.render(term, ctx.options))),
-      #("type", JString(value.type_name(term, ctx.options))),
-      #("variablesReference", JInt(child_reference(pid, term))),
+    json.object([
+      #("result", json.string(value.render(term, ctx.options))),
+      #("type", json.string(value.type_name(term, ctx.options))),
+      #("variablesReference", json.int(child_reference(pid, term))),
+      #("indexedVariables", indexed_variables(ctx, term)),
     ]),
   )
 }

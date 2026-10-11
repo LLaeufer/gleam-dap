@@ -303,6 +303,56 @@ fn indexed(items: List(Dynamic), options: Options) -> List(Child) {
   |> list.index_map(fn(item, i) { Child(int.to_string(i), item) })
 }
 
+/// How many children a list, map or tuple has when it is shown in pages
+/// (DAP's indexed variables), or `Error(Nil)` for values that aren't paged.
+/// Records aren't paged: their children are their fields.
+pub fn paged_size(term: Dynamic) -> Result(Int, Nil) {
+  case classify(term) {
+    TList(items) -> Ok(list.length(items))
+    TImproperList(items, _) -> Ok(list.length(items) + 1)
+    TMap(pairs) -> Ok(list.length(pairs))
+    TTuple([first, ..] as items) ->
+      case classify(first) {
+        TAtom(_) -> Error(Nil)
+        _ -> Ok(list.length(items))
+      }
+    _ -> Error(Nil)
+  }
+}
+
+/// The children of a paged value from `start`, at most `count` of them.
+pub fn children_page(
+  term: Dynamic,
+  options: Options,
+  start: Int,
+  count: Int,
+) -> List(Child) {
+  let numbered = fn(items: List(Dynamic)) {
+    items
+    |> list.drop(start)
+    |> list.take(count)
+    |> list.index_map(fn(item, i) { Child(int.to_string(start + i), item) })
+  }
+  case classify(term) {
+    TList(items) -> numbered(items)
+    TTuple(items) -> numbered(items)
+    TImproperList(items, tail) -> {
+      let size = list.length(items)
+      let shown = numbered(items)
+      case start + count > size {
+        True -> list.append(shown, [Child("tail", tail)])
+        False -> shown
+      }
+    }
+    TMap(pairs) ->
+      pairs
+      |> list.drop(start)
+      |> list.take(count)
+      |> list.map(fn(pair) { Child(render(pair.0, options), pair.1) })
+    _ -> []
+  }
+}
+
 /// Whether a value has children worth expanding.
 pub fn is_expandable(term: Dynamic) -> Bool {
   case classify(term) {

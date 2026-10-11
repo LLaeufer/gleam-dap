@@ -64,3 +64,22 @@ fn serve(n: Int) -> Nil {
 
 @external(erlang, "sample_ffi", "sleep")
 fn sleep(ms: Int) -> Nil
+
+/// A value larger than the variables view shows at once.
+pub fn big_main() -> Nil {
+  let numbers = up_to(250)
+  println("built")
+  let _ = numbers
+  Nil
+}
+
+fn up_to(n: Int) -> List(Int) {
+  build(n - 1, [])
+}
+
+fn build(n: Int, acc: List(Int)) -> List(Int) {
+  case n < 0 {
+    True -> acc
+    False -> build(n - 1, [n, ..acc])
+  }
+}

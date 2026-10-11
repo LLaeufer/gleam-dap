@@ -1286,12 +1286,29 @@ fn scopes(state: State, request: Request) -> State {
 fn variables(state: State, request: Request) -> State {
   let decoder = {
     use reference <- decode.field("variablesReference", decode.int)
-    decode.success(reference)
+    use start <- decode.optional_field(
+      "start",
+      None,
+      decode.optional(decode.int),
+    )
+    use count <- decode.optional_field(
+      "count",
+      None,
+      decode.optional(decode.int),
+    )
+    use filter <- decode.optional_field(
+      "filter",
+      None,
+      decode.optional(decode.string),
+    )
+    decode.success(#(reference, inspect.Page(start:, count:, filter:)))
   }
-  use reference <- decode_args(request, decoder, _, state)
+  use #(reference, page) <- decode_args(request, decoder, _, state)
   case context(state) {
     Ok(ctx) ->
-      in_worker(state, request, fn() { inspect.variables_body(ctx, reference) })
+      in_worker(state, request, fn() {
+        inspect.variables_body(ctx, reference, page)
+      })
     Error(message) -> {
       respond_error(request, message)
       state

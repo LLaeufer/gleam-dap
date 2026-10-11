@@ -241,6 +241,56 @@ pub fn values_look_like_gleam_test() {
   finish(client)
 }
 
+pub fn large_values_are_paged_test() {
+  let client = launch([#("function", JString("big_main"))])
+  let _ =
+    request(client, "setBreakpoints", [
+      #("source", source("sample.gleam")),
+      #("breakpoints", breakpoints([71])),
+    ])
+  let _ = request(client, "configurationDone", [])
+  let #(_, _, frames) = wait_stop(client)
+  let assert [frame, ..] = frames
+  let response =
+    request(client, "evaluate", [
+      #("expression", JString("numbers")),
+      #("frameId", JInt(frame.id)),
+    ])
+  assert get(response, ["body", "indexedVariables"], decode.int) == 250
+  let reference = get(response, ["body", "variablesReference"], decode.int)
+
+  // Clients that page (VS Code) ask for parts.
+  assert dap_client.variables_with(client, reference, [
+      #("filter", JString("indexed")),
+      #("start", JInt(120)),
+      #("count", JInt(3)),
+    ])
+    |> values
+    == [#("120", "120"), #("121", "121"), #("122", "122")]
+  assert dap_client.variables_with(client, reference, [
+      #("filter", JString("named")),
+    ])
+    == []
+
+  // Clients that don't (LSP4IJ) get groups to expand.
+  let groups = dap_client.variables(client, reference)
+  assert list.map(groups, fn(v) { v.name })
+    == ["[0..99]", "[100..199]", "[200..249]"]
+  let assert [_, _, last] = groups
+  let items = dap_client.variables(client, last.reference)
+  assert list.length(items) == 50
+  assert list.first(values(items)) == Ok(#("200", "200"))
+  assert list.last(values(items)) == Ok(#("249", "249"))
+  // Paging inside a group counts from the group's start.
+  assert dap_client.variables_with(client, last.reference, [
+      #("start", JInt(10)),
+      #("count", JInt(2)),
+    ])
+    |> values
+    == [#("210", "210"), #("211", "211")]
+  finish(client)
+}
+
 pub fn stop_on_gleam_error_test() {
   let client = launch([#("function", JString("crash_main"))])
   let _ =

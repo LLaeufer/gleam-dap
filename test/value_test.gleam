@@ -1,5 +1,6 @@
 import gleam/dict
 import gleam/dynamic.{type Dynamic}
+import gleam/list
 import gleam/option.{None, Some}
 import gleam_dap/value
 
@@ -90,6 +91,21 @@ pub fn children_test() {
   assert value.children(d(Rectangle(1.0, 2.0)), options())
     == [value.Child("0", d(1.0)), value.Child("1", d(2.0))]
   assert value.children(d(1), options()) == []
+}
+
+pub fn paging_test() {
+  assert value.paged_size(d([1, 2, 3])) == Ok(3)
+  assert value.paged_size(improper()) == Ok(2)
+  assert value.paged_size(d(#(1, 2))) == Ok(2)
+  assert value.paged_size(d(Person("Ada", 36))) == Error(Nil)
+  assert value.paged_size(d(1)) == Error(Nil)
+  assert value.children_page(d([10, 20, 30, 40]), options(), 1, 2)
+    == [value.Child("1", d(20)), value.Child("2", d(30))]
+  assert value.children_page(improper(), options(), 1, 1)
+    == [value.Child("tail", d(2))]
+  let map = dict.from_list([#(1, "a"), #(2, "b"), #(3, "c")])
+  assert value.paged_size(d(map)) == Ok(3)
+  assert list.length(value.children_page(d(map), options(), 2, 5)) == 1
 }
 
 pub fn expandable_test() {
