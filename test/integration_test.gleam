@@ -238,6 +238,23 @@ pub fn values_look_like_gleam_test() {
       #("frameId", JInt(frame.id)),
     ])
   assert get(response, ["body", "result"], decode.string) == "38"
+
+  // Gleam expressions: calls into the frame's module without a module
+  // name, other modules, record updates and case.
+  let evaluate = fn(expression) {
+    let response =
+      request(client, "evaluate", [
+        #("expression", JString(expression)),
+        #("frameId", JInt(frame.id)),
+      ])
+    get(response, ["body", "result"], decode.string)
+  }
+  assert evaluate("greet(\"Bob\")") == "\"Hello, Bob!\""
+  assert evaluate("shapes.birthday(person).age") == "37"
+  assert evaluate("Person(..person, name: \"Grace\")")
+    == "Person(name: \"Grace\", age: 36)"
+  assert evaluate("case person { Person(age:, ..) if age > 30 -> age _ -> 0 }")
+    == "36"
   finish(client)
 }
 

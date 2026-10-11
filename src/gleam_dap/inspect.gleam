@@ -413,10 +413,13 @@ pub fn child_reference(pid: Pid, term: Dynamic) -> Int {
 
 // --- Evaluate ---------------------------------------------------------------
 
+/// Evaluates a Gleam expression with the bindings of a frame. Calls without
+/// a module go to `module` (empty for none).
 @external(erlang, "gleam_dap_eval_ffi", "eval")
 fn eval(
   source: String,
   bindings: List(#(String, Dynamic)),
+  module: String,
 ) -> Result(Dynamic, String)
 
 /// Evaluates an expression in a frame (or with no bindings if there is no
@@ -439,7 +442,11 @@ pub fn evaluate_body(
     Some(#(_, frame)) -> frame_bindings(frame)
     None -> Ok([])
   })
-  use term <- result.try(eval(expression, bindings))
+  let module = case frame {
+    Some(#(_, frame)) -> frame.module
+    None -> ""
+  }
+  use term <- result.try(eval(expression, bindings, module))
   let pid = case frame {
     Some(#(pid, _)) -> pid
     None -> process.self()
