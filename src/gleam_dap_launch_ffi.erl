@@ -1,7 +1,6 @@
 -module(gleam_dap_launch_ffi).
 -export([loaded_elsewhere/2, parallel_map/2, eunit_args/1, connect_node/2,
-         start_distribution/0, module_exports/1, get_env/1,
-         wait_for_debugger_server/0]).
+         start_distribution/0, module_exports/1, get_env/1]).
 
 %% True when the module the adapter would get is not the project's copy:
 %% either the adapter has already loaded its own, or its own comes first
@@ -93,20 +92,3 @@ get_env(Name) ->
         Value -> {ok, unicode:characters_to_binary(Value)}
     end.
 
-%% `int` registers its server as a global name, and the interpreted stubs
-%% on other nodes look it up there. Until the name has reached a node, a
-%% process there that calls an interpreted function crashes, so wait for it
-%% before interpreting anything (up to five seconds).
-wait_for_debugger_server() ->
-    catch global:sync(),
-    wait_for_debugger_server(50).
-
-wait_for_debugger_server(0) -> nil;
-wait_for_debugger_server(N) ->
-    Missing = [Node || Node <- nodes(),
-                       catch erpc:call(Node, global, whereis_name, [dbg_iserver], 1000)
-                           =:= undefined],
-    case Missing of
-        [] -> nil;
-        _ -> timer:sleep(100), wait_for_debugger_server(N - 1)
-    end.

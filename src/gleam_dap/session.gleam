@@ -512,10 +512,6 @@ fn prepare(
     True -> Ok(#(config, index, set.new(), mode))
     False -> {
       use _ <- result.try(int_start(config.stack_trace_mode))
-      case mode {
-        Attach -> wait_for_debugger_server()
-        Launch -> Nil
-      }
       let modules = launch.modules_to_interpret(index, config)
       let failures = launch.interpret(modules, mode == Attach)
       list.each(failures, fn(f) {
@@ -679,9 +675,6 @@ fn int_delete_break(module: String, line: Int) -> Nil
 
 @external(erlang, "gleam_dap_int_ffi", "set_condition")
 fn int_set_condition(module: String, line: Int, check: #(String, String)) -> Nil
-
-@external(erlang, "gleam_dap_launch_ffi", "wait_for_debugger_server")
-fn wait_for_debugger_server() -> Nil
 
 @external(erlang, "gleam_dap_eval_ffi", "set_remote")
 fn set_remote_conditions(remote: Bool) -> Nil
